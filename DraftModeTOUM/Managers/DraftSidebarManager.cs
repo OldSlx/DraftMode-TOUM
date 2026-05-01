@@ -11,20 +11,30 @@ namespace DraftModeTOUM.Managers
     public static class DraftSidebarManager
     {
         private static bool _active = false;
-        private static readonly string ColPlayerName   = "#ffdd00ff";
-        private static readonly string ColLocalPlayer  = "#8bd5f9ff";
+        private static readonly string ColPlayerName  = "#ffdd00ff";
+        private static readonly string ColLocalPlayer = "#8bd5f9ff";
+
+        // ── Banner ────────────────────────────────────────────────────────────
+        private static GameObject    _bannerGo;
+        private static SpriteRenderer _bannerSr;
+
+        // ── Activate / Deactivate ─────────────────────────────────────────────
 
         public static void Activate()
         {
             if (!IsSettingEnabled()) return;
             _active = true;
+            EnsureBanner();
+            if (_bannerGo != null) _bannerGo.SetActive(true);
             DraftModePlugin.Logger.LogInfo("[DraftSidebar] Activated.");
         }
 
         public static void Deactivate()
         {
-            if (!_active) return; // guard against repeated/redundant calls
+            if (!_active) return;
             _active = false;
+
+            if (_bannerGo != null) _bannerGo.SetActive(false);
 
             // Clear the text we wrote so TOU-Mira's UpdateRoleList reclaims the panel
             // on its next tick and shows the normal role/neutral list again.
@@ -38,20 +48,36 @@ namespace DraftModeTOUM.Managers
                 roleList.SetActive(false);
 
             // Make sure IsHoveringRoleList is not stuck true — that would prevent
-            // TOU-Mira's UpdateRoleList from writing new text (HudManagerPatches line ~926:
-            // "if (!IsHoveringRoleList) RoleListTextComp.text = ...").
+            // TOU-Mira's UpdateRoleList from writing new text.
             HudManagerPatches.IsHoveringRoleList = false;
 
             DraftModePlugin.Logger.LogInfo("[DraftSidebar] Deactivated.");
         }
 
+        /// <summary>
+        /// Nulls out the cached banner references (call on disconnect / scene change
+        /// so EnsureBanner() re-parents to the new HUD on the next draw).
+        /// </summary>
+        public static void ClearBannerRef()
+        {
+            _bannerGo = null;
+            _bannerSr = null;
+        }
+
         public static bool IsActive => _active;
+
+        // ── Draw ──────────────────────────────────────────────────────────────
 
         public static void DrawSidebar()
         {
             var roleList = HudManagerPatches.RoleList;
             var tmp      = HudManagerPatches.RoleListTextComp;
             if (roleList == null || tmp == null) return;
+
+            // Lazy-init the banner in case RoleList wasn't ready at Activate() time.
+            EnsureBanner();
+            if (_bannerGo != null && !_bannerGo.activeSelf)
+                _bannerGo.SetActive(true);
 
             roleList.SetActive(true);
             tmp.fontSize    = 3f;
@@ -60,17 +86,66 @@ namespace DraftModeTOUM.Managers
             tmp.text        = BuildText();
         }
 
+        // ── Banner helpers ────────────────────────────────────────────────────
+
+        private static void EnsureBanner()
+        {
+            // Reuse if already valid.
+            if (_bannerGo != null) return;
+
+            var roleList = HudManagerPatches.RoleList;
+            if (roleList == null) return;
+
+            _bannerGo = new GameObject("DraftSidebarBanner");
+            _bannerGo.transform.SetParent(roleList.transform, false);
+
+            _bannerSr                  = _bannerGo.AddComponent<SpriteRenderer>();
+            _bannerSr.sortingLayerName = "UI";
+            _bannerSr.sortingOrder     = 51;
+
+            var sprite = DraftAssets.DraftBanner.LoadAsset();
+            if (sprite != null)
+            {
+                _bannerSr.sprite = sprite;
+
+                // DraftBanner.png is loaded at PPU 50 (see DraftAssets.cs).
+                // Rendered size in Unity units = texturePx / 50.
+                // Adjust localScale and localPosition once you see it in-game;
+                // these defaults place it flush above the first text line.
+                _bannerGo.transform.localScale    = Vector3.one * 0.38f;
+                _bannerGo.transform.localPosition = new Vector3(1.55001f, -1.0001f, -1f);
+            }
+            else
+            {
+                DraftModePlugin.Logger.LogWarning("[DraftSidebar] DraftBanner sprite failed to load.");
+            }
+
+            // Start hidden; Activate() / DrawSidebar() will enable it.
+            _bannerGo.SetActive(false);
+        }
+
+        // ── Settings check ────────────────────────────────────────────────────
+
         private static bool IsSettingEnabled()
         {
             var settings = LocalSettingsTabSingleton<DraftModeLocalSettings>.Instance;
             return settings != null && settings.ShowDraftSidebar.Value;
         }
 
+        // ── Text building ─────────────────────────────────────────────────────
+
         private static string BuildText()
         {
             var sb = new StringBuilder();
-            sb.AppendLine($"<color=#e7a6ffff><b>── Draft Order ──</b></color>");
+
+            // Blank first line acts as a vertical spacer below the banner image.
             sb.AppendLine();
+            sb.AppendLine();
+            sb.AppendLine();
+            sb.AppendLine();
+            sb.AppendLine();
+            sb.AppendLine();
+
 
             if (!DraftManager.IsDraftActive)
             {
@@ -83,10 +158,12 @@ namespace DraftModeTOUM.Managers
                 var state = DraftManager.GetStateForSlot(slot);
                 if (state == null) continue;
 
-                bool isMe = state.PlayerId == PlayerControl.LocalPlayer.PlayerId;
-                string nameCol = isMe ? ColLocalPlayer : ColPlayerName;
+                bool   isMe     = state.PlayerId == PlayerControl.LocalPlayer.PlayerId;
+                string nameCol  = isMe ? ColLocalPlayer : ColPlayerName;
 
-                sb.AppendLine($"<color={nameCol}><b>Player {slot:D2}</b></color> " + BuildStatusLine(state));
+                sb.AppendLine(
+                    $"<color={nameCol}><b>Player {slot:D2}</b></color> " +
+                    BuildStatusLine(state));
             }
 
             return sb.ToString().TrimEnd();
@@ -194,19 +271,28 @@ namespace DraftModeTOUM.Managers
     /// <summary>
     /// Belt-and-suspenders: deactivate when the game actually starts
     /// so the sidebar never leaks into in-game.
+    /// Also clears the banner ref so it re-parents correctly on the next lobby.
     /// </summary>
     [HarmonyPatch(typeof(IntroCutscene), nameof(IntroCutscene.CoBegin))]
     public static class DraftSidebarDeactivateOnIntro
     {
         [HarmonyPostfix]
-        public static void Postfix() => DraftSidebarManager.Deactivate();
+        public static void Postfix()
+        {
+            DraftSidebarManager.Deactivate();
+            DraftSidebarManager.ClearBannerRef();
+        }
     }
 
     [HarmonyPatch(typeof(AmongUsClient), nameof(AmongUsClient.OnDisconnected))]
     public static class DraftSidebarDeactivateOnDisconnect
     {
         [HarmonyPostfix]
-        public static void Postfix() => DraftSidebarManager.Deactivate();
+        public static void Postfix()
+        {
+            DraftSidebarManager.Deactivate();
+            DraftSidebarManager.ClearBannerRef();
+        }
     }
 
     // ── RoleListHoverComponent suppression ────────────────────────────────────

@@ -19,50 +19,76 @@ namespace DraftModeTOUM
     {
         public static DraftScreenController Instance { get; private set; }
 
+        // ── Card visual caches ────────────────────────────────────────────────
+
+        private sealed class DraftCardVisuals
+        {
+            public SpriteRenderer Aura;
+        }
+
+        private sealed class DraftCardIdleCache
+        {
+            public Transform Card;
+            public Vector3 BasePosition;
+            public Quaternion BaseRotation;
+        }
+
+        private static readonly Dictionary<Transform, DraftCardVisuals> _cardVisuals = new();
+
+        // ── Fields ────────────────────────────────────────────────────────────
+
         private GameObject _screenRoot;
         private ushort[] _offeredRoleIds;
         private bool _hasPicked;
-        private TextMeshPro _statusText;      // "Pick Your Role!" — top, kept as-is
-        private TextMeshPro _timerText;       // "# seconds remain" — bottom center, new
-        private GameObject _timerRoot;        // holder for the bottom timer labe
+        private TextMeshPro _statusText;
+        private TextMeshPro _timerText;
+        private GameObject _timerRoot;
+        private GameObject _timerTrack;
+        private GameObject _timerFill;
+        private SpriteRenderer _timerFillRenderer;
+
+        private GameObject _selectionBackdrop;
+        private SpriteRenderer _selectionBackdropWash;
+        private SpriteRenderer _selectionBackdropBeam;
+        private SpriteRenderer _selectionBackdropHorizon;
+        private SpriteRenderer _selectionBackdropFlash;
+        private readonly List<SpriteRenderer> _selectionBackdropParticles = new();
+        private readonly List<Vector3> _selectionBackdropParticleBase = new();
+        private readonly List<SpriteRenderer> _selectionBackdropBeams = new();
+
+        private readonly List<DraftCardIdleCache> _idleCardCaches = new();
+        private readonly Dictionary<Transform, DraftCardIdleCache> _idleCardCacheByTransform = new();
+        private Transform _hoveredCard;
+
+        // Backdrop animation — static color, no hover-driven RGB changes
+        private readonly Color _backdropPulseColor = new Color(0f, 0.95f, 1f, 0.4f);
+        private float _backdropPulse;
+        private float _backdropTime;
 
         private const string PrefabName = "SelectRoleGame";
-        private const float TeamNameFontSize = 3.8f;
-       private static float CardScaleForCount(int count) => count switch
-        {
-            <= 3 => 0.55f,
-            <= 4 => 0.55f,
-            <= 5 => 0.55f,
-            <= 6 => 0.55f,
-            <= 7 => 0.55f,
-            <= 8 => 0.55f,
-            _    => 0.55f,
-        };
+        private const float DraftReadyGateSeconds = 0.92f;
+        private const float DraftCardRevealStaggerSeconds = 0.045f;
+        private const float TimerProgressWidth = 4.2f;
+
+        private static float CardScaleForCount(int count) => 0.55f;
 
         private static float SpacingForCount(int count) => count switch
         {
-            <= 3 => -1f,
-            <= 4 => -1f,
             <= 5 => -1f,
-            <= 6 => 0f,
-            <= 8 => 0f,
-            _    => 0f,
+            _ => 0f,
         };
 
         private static Color GetTeamColor(string teamName)
         {
             if (string.IsNullOrEmpty(teamName)) return Color.white;
             string lower = teamName.ToLowerInvariant();
-            if (lower.Contains("crewmate")) return new Color32(0,   255, 255, 255);
-            if (lower.Contains("impostor") ||
-                lower.Contains("imposter")) return new Color32(255,   0,   0, 255);
-            if (lower.Contains("neutral"))  return new Color32(180, 180, 180, 255);
+            if (lower.Contains("crewmate")) return new Color32(0, 255, 255, 255);
+            if (lower.Contains("impostor") || lower.Contains("imposter")) return new Color32(255, 0, 0, 255);
+            if (lower.Contains("neutral")) return new Color32(180, 180, 180, 255);
             return Color.white;
         }
 
-
-
-        // ── Bottom-center timer label ─────────────────────────────────────────
+        // ── Bottom-center timer label + progress bar ──────────────────────────
 
         private void BuildBottomTimer()
         {
@@ -70,24 +96,39 @@ namespace DraftModeTOUM
 
             _timerRoot = new GameObject("DraftBottomTimer");
             _timerRoot.transform.SetParent(HudManager.Instance.transform, false);
-
-            // Position at bottom center of the screen, just where the ping tracker sits.
-            // Typical HUD space: y ≈ -2.6 puts it near the bottom edge in world units.
             _timerRoot.transform.localPosition = new Vector3(0f, -2.6f, -25f);
 
             _timerText = _timerRoot.AddComponent(
                 Il2CppInterop.Runtime.Il2CppType.Of<TextMeshPro>()).Cast<TextMeshPro>();
-
-            _timerText.font         = HudManager.Instance.TaskPanel.taskText.font;
+            _timerText.font = HudManager.Instance.TaskPanel.taskText.font;
             _timerText.fontMaterial = HudManager.Instance.TaskPanel.taskText.fontMaterial;
-            _timerText.fontSize     = 2.5f;
-            _timerText.alignment    = TextAlignmentOptions.Center;
+            _timerText.fontSize = 2.5f;
+            _timerText.alignment = TextAlignmentOptions.Center;
             _timerText.enableWordWrapping = false;
-            _timerText.text         = string.Empty;
+            _timerText.text = string.Empty;
 
-            // Make sure it renders on top of most HUD elements
             var r = _timerRoot.GetComponent<Renderer>();
-            if (r != null) { r.sortingLayerName = "UI"; r.sortingOrder = 55; }
+            if (r != null) { r.sortingLayerName = "UI"; r.sortingOrder = 82; }
+
+            _timerTrack = new GameObject("DraftBottomTimerTrack");
+            _timerTrack.transform.SetParent(_timerRoot.transform, false);
+            _timerTrack.transform.localPosition = new Vector3(0f, -0.32f, 0.02f);
+            _timerTrack.transform.localScale = new Vector3(TimerProgressWidth, 0.045f, 1f);
+            var trackRenderer = _timerTrack.AddComponent<SpriteRenderer>();
+            trackRenderer.sprite = MakeWhiteSprite();
+            trackRenderer.color = new Color(1f, 1f, 1f, 0.16f);
+            trackRenderer.sortingLayerName = "UI";
+            trackRenderer.sortingOrder = 81;
+
+            _timerFill = new GameObject("DraftBottomTimerFill");
+            _timerFill.transform.SetParent(_timerRoot.transform, false);
+            _timerFill.transform.localPosition = new Vector3(-TimerProgressWidth * 0.5f, -0.32f, -0.01f);
+            _timerFill.transform.localScale = new Vector3(TimerProgressWidth, 0.055f, 1f);
+            _timerFillRenderer = _timerFill.AddComponent<SpriteRenderer>();
+            _timerFillRenderer.sprite = MakeWhiteSprite();
+            _timerFillRenderer.color = new Color(1f, 0.82f, 0.12f, 0.92f);
+            _timerFillRenderer.sortingLayerName = "UI";
+            _timerFillRenderer.sortingOrder = 83;
         }
 
         private void DestroyBottomTimer()
@@ -97,6 +138,35 @@ namespace DraftModeTOUM
                 try { Destroy(_timerRoot); } catch { }
                 _timerRoot = null;
                 _timerText = null;
+                _timerTrack = null;
+                _timerFill = null;
+                _timerFillRenderer = null;
+            }
+        }
+
+        private void HideTimerProgressLine()
+        {
+            if (_timerTrack != null) _timerTrack.SetActive(false);
+            if (_timerFill != null) _timerFill.SetActive(false);
+        }
+
+        private void UpdateTimerProgressLine(float secondsLeft, bool urgent)
+        {
+            if (_timerTrack == null || _timerFill == null) return;
+            _timerTrack.SetActive(true);
+            _timerFill.SetActive(true);
+
+            float duration = Mathf.Max(1f, DraftManager.TurnDuration);
+            float progress = Mathf.Clamp01(secondsLeft / duration);
+            float width = Mathf.Max(0.03f, TimerProgressWidth * progress);
+            _timerFill.transform.localScale = new Vector3(width, urgent ? 0.075f : 0.055f, 1f);
+            _timerFill.transform.localPosition = new Vector3(
+                -TimerProgressWidth * 0.5f + width * 0.5f, -0.32f, -0.01f);
+            if (_timerFillRenderer != null)
+            {
+                _timerFillRenderer.color = urgent
+                    ? new Color(1f, 0.22f, 0.22f, 0.96f)
+                    : new Color(1f, 0.82f, 0.12f, 0.92f);
             }
         }
 
@@ -119,6 +189,7 @@ namespace DraftModeTOUM
             if (Instance == null) return;
 
             Instance.DestroyBottomTimer();
+            Instance.DestroySelectionBackdrop();
 
             if (Instance._screenRoot != null) Destroy(Instance._screenRoot);
 
@@ -133,6 +204,9 @@ namespace DraftModeTOUM
                 }
             }
 
+            Instance._idleCardCaches.Clear();
+            Instance._idleCardCacheByTransform.Clear();
+            _cardVisuals.Clear();
             Destroy(Instance.gameObject);
             Instance = null;
         }
@@ -145,8 +219,8 @@ namespace DraftModeTOUM
             if (HudManager.Instance.FullScreen != null)
                 HudManager.Instance.FullScreen.color = Color.clear;
 
-           
             BuildBottomTimer();
+            BuildSelectionBackdrop();
 
             GameObject prefab = null;
             try
@@ -155,7 +229,7 @@ namespace DraftModeTOUM
                 if (bundle != null)
                     prefab = bundle.LoadAsset(PrefabName)?.TryCast<GameObject>();
             }
-            catch (System.Exception ex)
+            catch (Exception ex)
             {
                 DraftModePlugin.Logger.LogWarning($"[DraftScreenController] Bundle load failed: {ex.Message}");
             }
@@ -164,6 +238,7 @@ namespace DraftModeTOUM
             {
                 DraftModePlugin.Logger.LogError("[DraftScreenController] SelectRoleGame prefab not found.");
                 DestroyBottomTimer();
+                DestroySelectionBackdrop();
                 Destroy(gameObject); Instance = null; return;
             }
 
@@ -177,19 +252,20 @@ namespace DraftModeTOUM
                 _screenRoot.transform.localPosition = Vector3.zero;
             }
 
-            var holderGo    = _screenRoot.transform.Find("RoleCardHolder");
-            var statusGo    = _screenRoot.transform.Find("Status");
+            var holderGo = _screenRoot.transform.Find("RoleCardHolder");
+            var statusGo = _screenRoot.transform.Find("Status");
             var rolesHolder = _screenRoot.transform.Find("Roles");
 
-            // "Pick Your Role!" label — stays at the top exactly as before
+            HidePrefabBackdrop(_screenRoot.transform, rolesHolder, statusGo, holderGo);
+
             if (statusGo != null)
             {
                 _statusText = statusGo.GetComponent<TextMeshPro>();
                 if (_statusText != null)
                 {
-                    _statusText.font         = HudManager.Instance.TaskPanel.taskText.font;
+                    _statusText.font = HudManager.Instance.TaskPanel.taskText.font;
                     _statusText.fontMaterial = HudManager.Instance.TaskPanel.taskText.fontMaterial;
-                    _statusText.text         = "<color=#FFFFFF><b>Pick Your Role!</b></color>";
+                    _statusText.text = "<color=#FFFFFF><b>Pick Your Role!</b></color>";
                     statusGo.gameObject.SetActive(true);
                 }
             }
@@ -197,6 +273,7 @@ namespace DraftModeTOUM
             if (holderGo == null)
             {
                 DestroyBottomTimer();
+                DestroySelectionBackdrop();
                 Destroy(_screenRoot); Destroy(gameObject); Instance = null; return;
             }
 
@@ -208,28 +285,25 @@ namespace DraftModeTOUM
 
             int totalCards = cards.Count;
             float cardScale = CardScaleForCount(totalCards);
-            float spacing   = SpacingForCount(totalCards);
-
+            float spacing = SpacingForCount(totalCards);
             bool useGrid = totalCards > 5;
 
             if (useGrid)
             {
                 var hLayout = rolesHolder?.GetComponent<UnityEngine.UI.HorizontalLayoutGroup>();
                 if (hLayout != null) hLayout.enabled = false;
-
                 var rt = rolesHolder?.GetComponent<RectTransform>();
                 if (rt != null) rt.sizeDelta = new Vector2(rt.sizeDelta.x, 12f);
             }
             else
             {
                 var layoutGroup = rolesHolder?.GetComponent<UnityEngine.UI.HorizontalLayoutGroup>();
-                if (layoutGroup != null)
-                    layoutGroup.spacing = spacing;
+                if (layoutGroup != null) layoutGroup.spacing = spacing;
             }
 
             for (int i = 0; i < totalCards; i++)
             {
-                var card       = cards[i];
+                var card = cards[i];
                 int capturedIdx = card.Index;
 
                 var btn = CreateCard(
@@ -246,66 +320,354 @@ namespace DraftModeTOUM
             Coroutines.Start(CoAnimateCards(rolesHolder, cardScale, useGrid, totalCards));
         }
 
-        // ── Card creation (unchanged) ─────────────────────────────────────────
+        private void HidePrefabBackdrop(Transform root, Transform rolesHolder, Transform statusGo, Transform holderGo)
+        {
+            if (root == null) return;
+            foreach (var sr in root.GetComponentsInChildren<SpriteRenderer>(true))
+            {
+                if (sr == null || sr.gameObject == null) continue;
+                var tr = sr.transform;
+                if (IsChildOf(tr, rolesHolder) || IsChildOf(tr, statusGo) || IsChildOf(tr, holderGo)) continue;
+                string n = sr.gameObject.name.ToLowerInvariant();
+                Vector3 size = sr.bounds.size;
+                if (n.Contains("background") || n.Contains("backdrop") || n.Contains("bg") || size.x > 4f || size.y > 3f)
+                    sr.enabled = false;
+            }
+        }
+
+        private static bool IsChildOf(Transform child, Transform parent)
+        {
+            if (child == null || parent == null) return false;
+            var cur = child;
+            while (cur != null)
+            {
+                if (cur == parent) return true;
+                cur = cur.parent;
+            }
+            return false;
+        }
+
+        // ── Animated galaxy backdrop ──────────────────────────────────────────
+
+        private void BuildSelectionBackdrop()
+        {
+            if (HudManager.Instance == null) return;
+            DestroySelectionBackdrop();
+            _selectionBackdropParticles.Clear();
+            _selectionBackdropParticleBase.Clear();
+            _selectionBackdropBeams.Clear();
+
+            var cam = Camera.main;
+            float camH = cam != null ? cam.orthographicSize * 2f : 6f;
+            float camW = camH * ((float)Screen.width / Screen.height);
+
+            _selectionBackdrop = new GameObject("DraftSelectionBackdropRoot");
+            _selectionBackdrop.transform.SetParent(HudManager.Instance.transform, false);
+            _selectionBackdrop.transform.localPosition = new Vector3(0f, 0f, 0.7f);
+
+            MakeBackdropSprite("DraftSelectionBackdropBase", Vector3.zero,
+                new Vector3(camW, camH, 1f), MakeWhiteSprite(),
+                new Color(0.010f, 0.006f, 0.035f, 1f), 46);
+
+            _selectionBackdropWash = MakeBackdropSprite("DraftSelectionBackdropWash",
+                new Vector3(0f, 0.05f, -0.02f),
+                new Vector3(camW * 1.05f, camH * 0.55f, 1f), MakeSoftGlowSprite(),
+                new Color(0f, 0.95f, 1f, 0.18f), 47);
+
+            _selectionBackdropBeam = MakeBackdropSprite("DraftSelectionBackdropBeam",
+                new Vector3(-camW * 0.36f, 0f, -0.04f),
+                new Vector3(camW * 0.18f, camH * 0.9f, 1f), MakeSoftGlowSprite(),
+                new Color(1f, 0.84f, 0.2f, 0.16f), 49);
+            _selectionBackdropBeam.transform.localRotation = Quaternion.Euler(0f, 0f, -13f);
+            _selectionBackdropBeams.Add(_selectionBackdropBeam);
+
+            var beam2 = MakeBackdropSprite("DraftSelectionBackdropBeam",
+                new Vector3(camW * 0.34f, 0f, -0.04f),
+                new Vector3(camW * 0.14f, camH * 0.85f, 1f), MakeSoftGlowSprite(),
+                new Color(0.72f, 0.42f, 1f, 0.12f), 49);
+            beam2.transform.localRotation = Quaternion.Euler(0f, 0f, 14f);
+            _selectionBackdropBeams.Add(beam2);
+
+            _selectionBackdropHorizon = MakeBackdropSprite("DraftSelectionBackdropHorizon",
+                new Vector3(0f, -0.58f, -0.03f),
+                new Vector3(camW * 0.9f, 0.06f, 1f), MakeSoftGlowSprite(),
+                new Color(0f, 0.95f, 1f, 0.28f), 50);
+
+            _selectionBackdropFlash = MakeBackdropSprite("DraftSelectionBackdropFlash",
+                Vector3.zero, new Vector3(camW, camH, 1f), MakeSoftGlowSprite(),
+                new Color(1f, 1f, 1f, 0f), 53);
+
+            for (int i = 0; i < 18; i++)
+            {
+                float x = Mathf.Sin(i * 1.91f) * camW * 0.46f;
+                float y = Mathf.Cos(i * 1.37f) * camH * 0.37f;
+                var p = MakeBackdropSprite("DraftSelectionBackdropParticle",
+                    new Vector3(x, y, -0.05f),
+                    Vector3.one * (0.035f + (i % 4) * 0.012f), MakeSoftGlowSprite(),
+                    new Color(0.45f, 0.95f, 1f, 0.24f), 52);
+                _selectionBackdropParticles.Add(p);
+                _selectionBackdropParticleBase.Add(p.transform.localPosition);
+            }
+        }
+
+        private SpriteRenderer MakeBackdropSprite(string name, Vector3 pos, Vector3 scale,
+            Sprite sprite, Color color, int order)
+        {
+            var go = new GameObject(name);
+            go.transform.SetParent(_selectionBackdrop.transform, false);
+            go.transform.localPosition = pos;
+            go.transform.localScale = scale;
+            var sr = go.AddComponent<SpriteRenderer>();
+            sr.sprite = sprite;
+            sr.color = color;
+            sr.sortingLayerName = "UI";
+            sr.sortingOrder = order;
+            return sr;
+        }
+
+        private void DestroySelectionBackdrop()
+        {
+            if (_selectionBackdrop != null)
+            {
+                try { Destroy(_selectionBackdrop); } catch { }
+                _selectionBackdrop = null;
+                _selectionBackdropWash = null;
+                _selectionBackdropBeam = null;
+                _selectionBackdropHorizon = null;
+                _selectionBackdropFlash = null;
+                _selectionBackdropParticles.Clear();
+                _selectionBackdropParticleBase.Clear();
+                _selectionBackdropBeams.Clear();
+            }
+        }
+
+        // Backdrop animates with a fixed cyan/teal color — no hover-driven color changes
+        private void UpdateSelectionBackdrop()
+        {
+            if (_selectionBackdrop == null) return;
+
+            _backdropTime += Time.deltaTime;
+            _backdropPulse = Mathf.MoveTowards(_backdropPulse, 0f, Time.deltaTime * 1.35f);
+
+            Color idle = new Color(0.0f, 0.55f, 0.95f, 0.24f);
+            // Always blend toward the fixed cyan backdrop color, never toward a card-hover color
+            Color wash = Color.Lerp(idle, _backdropPulseColor, Mathf.Clamp01(_backdropPulse));
+            if (_selectionBackdropWash != null)
+            {
+                wash.a = 0.16f + _backdropPulse * 0.26f + (Mathf.Sin(_backdropTime * 0.9f) + 1f) * 0.025f;
+                _selectionBackdropWash.color = wash;
+                _selectionBackdropWash.transform.localScale = new Vector3(
+                    9.4f + _backdropPulse * 0.8f, 3.35f + _backdropPulse * 0.4f, 1f);
+            }
+
+            for (int i = 0; i < _selectionBackdropBeams.Count; i++)
+            {
+                var beam = _selectionBackdropBeams[i];
+                if (beam == null) continue;
+                var c = Color.Lerp(new Color(0f, 0.95f, 1f, 0.12f),
+                    _backdropPulseColor, Mathf.Clamp01(_backdropPulse));
+                c.a = 0.14f + _backdropPulse * 0.38f;
+                beam.color = c;
+                float dir = i == 0 ? -1f : 1f;
+                beam.transform.localPosition = new Vector3(
+                    dir * (2.8f + Mathf.Sin(_backdropTime * 0.55f + i) * 0.35f),
+                    Mathf.Cos(_backdropTime * 0.42f + i) * 0.18f, -0.04f);
+            }
+
+            if (_selectionBackdropHorizon != null)
+            {
+                var c = Color.Lerp(new Color(0f, 0.95f, 1f, 0.28f),
+                    _backdropPulseColor, Mathf.Clamp01(_backdropPulse));
+                c.a = 0.24f + _backdropPulse * 0.32f;
+                _selectionBackdropHorizon.color = c;
+                _selectionBackdropHorizon.transform.localScale = new Vector3(
+                    8.2f + Mathf.Sin(_backdropTime * 0.65f) * 0.22f,
+                    0.06f + _backdropPulse * 0.04f, 1f);
+            }
+
+            if (_selectionBackdropFlash != null)
+            {
+                var c = _backdropPulseColor;
+                c.a = _backdropPulse * 0.12f;
+                _selectionBackdropFlash.color = c;
+            }
+
+            for (int i = 0; i < _selectionBackdropParticles.Count; i++)
+            {
+                var p = _selectionBackdropParticles[i];
+                if (p == null || i >= _selectionBackdropParticleBase.Count) continue;
+                Vector3 b = _selectionBackdropParticleBase[i];
+                float phase = i * 0.73f;
+                p.transform.localPosition = b + new Vector3(
+                    Mathf.Sin(_backdropTime * 0.8f + phase) * 0.22f,
+                    Mathf.Cos(_backdropTime * 0.55f + phase) * 0.18f, 0f);
+                p.transform.localScale = Vector3.one *
+                    (0.035f + (i % 4) * 0.012f + _backdropPulse * 0.045f);
+                var c = Color.Lerp(new Color(0.5f, 0.95f, 1f, 0.22f),
+                    _backdropPulseColor, Mathf.Clamp01(_backdropPulse));
+                c.a = 0.18f + (Mathf.Sin(_backdropTime * 1.4f + phase) + 1f) * 0.10f
+                    + _backdropPulse * 0.28f;
+                p.color = c;
+            }
+        }
+
+        // ── Card idle motion ──────────────────────────────────────────────────
+
+        private void RegisterIdleCard(Transform card)
+        {
+            if (card == null) return;
+            if (!_idleCardCacheByTransform.TryGetValue(card, out var cache))
+            {
+                cache = new DraftCardIdleCache { Card = card };
+                _idleCardCacheByTransform[card] = cache;
+                _idleCardCaches.Add(cache);
+            }
+            cache.BasePosition = card.localPosition;
+            cache.BaseRotation = card.localRotation;
+        }
+
+        private void SetCardToIdleBase(Transform card)
+        {
+            if (card == null) return;
+            if (!_idleCardCacheByTransform.TryGetValue(card, out var cache)) return;
+            card.localPosition = cache.BasePosition;
+            card.localRotation = cache.BaseRotation;
+        }
+
+        private void UpdateCardIdleMotion()
+        {
+            if (!_cardsReady || _hasPicked) return;
+            for (int i = 0; i < _idleCardCaches.Count; i++)
+            {
+                var cache = _idleCardCaches[i];
+                var card = cache.Card;
+                if (card == null) continue;
+                if (card == _hoveredCard) { SetCardToIdleBase(card); continue; }
+
+                float phase = i * 0.79f;
+                float bob = Mathf.Sin(_backdropTime * 1.15f + phase) * 0.035f;
+                float sway = Mathf.Sin(_backdropTime * 0.62f + phase) * 0.016f;
+                card.localPosition = cache.BasePosition + new Vector3(sway, bob, 0f);
+                card.localRotation = cache.BaseRotation *
+                    Quaternion.Euler(0f, 0f, Mathf.Sin(_backdropTime * 0.9f + phase) * 1.35f);
+            }
+        }
+
+        // ── Alliance aura (fixed per-faction color, no hover RGB) ─────────────
+
+        private static DraftCardVisuals DraftCardVisualCache(Transform card)
+        {
+            if (!_cardVisuals.TryGetValue(card, out var visuals))
+            {
+                visuals = new DraftCardVisuals();
+                _cardVisuals[card] = visuals;
+            }
+            return visuals;
+        }
+
+        private static Color GetAllianceColor(string teamName)
+        {
+            if (string.IsNullOrEmpty(teamName)) return new Color(1f, 0.86f, 0.22f, 0.42f);
+            string lower = teamName.ToLowerInvariant();
+            if (lower.Contains("impostor") || lower.Contains("imposter"))
+                return new Color(1f, 0.08f, 0.08f, 0.55f);
+            if (lower.Contains("neutral"))
+                return new Color(0.72f, 0.58f, 1f, 0.48f);
+            if (lower.Contains("crewmate"))
+                return new Color(0.0f, 0.95f, 1f, 0.46f);
+            return new Color(1f, 0.86f, 0.22f, 0.42f);
+        }
+
+        private static void SetAllianceAura(Transform card, Color color, float alpha, float scaleBoost)
+        {
+            if (card == null) return;
+            var visuals = DraftCardVisualCache(card);
+            var aura = visuals.Aura;
+
+            if (aura == null)
+            {
+                var go = new GameObject("DraftCardAllianceAura");
+                go.transform.SetParent(card, false);
+                go.transform.localPosition = new Vector3(0f, 0f, -0.72f);
+                aura = go.AddComponent<SpriteRenderer>();
+                aura.sprite = MakeSoftGlowSprite();
+                aura.sortingLayerName = "UI";
+                aura.sortingOrder = 66;
+                visuals.Aura = aura;
+            }
+
+            aura.color = new Color(color.r, color.g, color.b, alpha);
+            aura.transform.localScale = new Vector3(4.45f * scaleBoost, 5.9f * scaleBoost, 1f);
+        }
+
+        private static void AttachAllianceAura(Transform card, string teamName)
+        {
+            if (card == null) return;
+            Color aura = GetAllianceColor(teamName);
+            SetAllianceAura(card, aura, 0.26f, 1f);
+        }
+
+        // ── Card creation ─────────────────────────────────────────────────────
 
         private static PassiveButton CreateCard(
             GameObject rolePrefab,
-            Transform  rolesHolder,
-            string     roleName,
-            string     teamName,
-            Sprite     icon,
-            int        cardIndex,
-            int        totalCards,
-            Color      color,
-            float      cardScale,
-            bool       useGrid = false,
-            float      spacing = 0f)
+            Transform rolesHolder,
+            string roleName,
+            string teamName,
+            Sprite icon,
+            int cardIndex,
+            int totalCards,
+            Color color,
+            float cardScale,
+            bool useGrid = false,
+            float spacing = 0f)
         {
-            var newRoleObj    = UnityEngine.Object.Instantiate(rolePrefab, rolesHolder);
-            var actualCard    = newRoleObj!.transform.GetChild(0);
-            var roleText      = actualCard.GetChild(0).GetComponent<TextMeshPro>();
-            var roleImage     = actualCard.GetChild(1).GetComponent<SpriteRenderer>();
-            var teamText      = actualCard.GetChild(2).GetComponent<TextMeshPro>();
+            var newRoleObj = UnityEngine.Object.Instantiate(rolePrefab, rolesHolder);
+            var actualCard = newRoleObj!.transform.GetChild(0);
+            var roleText = actualCard.GetChild(0).GetComponent<TextMeshPro>();
+            var roleImage = actualCard.GetChild(1).GetComponent<SpriteRenderer>();
+            var teamText = actualCard.GetChild(2).GetComponent<TextMeshPro>();
             var passiveButton = actualCard.GetComponent<PassiveButton>();
-            var rollover      = actualCard.GetComponent<ButtonRolloverHandler>();
+            var rollover = actualCard.GetComponent<ButtonRolloverHandler>();
 
-            int   tiltIndex = useGrid ? (cardIndex % Mathf.CeilToInt(totalCards / 2f)) : cardIndex;
+            newRoleObj.name = $"DraftCard_{cardIndex}";
+
+            int tiltIndex = useGrid ? (cardIndex % Mathf.CeilToInt(totalCards / 2f)) : cardIndex;
             float tiltScale = Mathf.Lerp(1f, 0.25f, Mathf.InverseLerp(3f, 9f, totalCards));
-            float randZ     = (-10f + tiltIndex * 5f) * tiltScale
-                              + UnityEngine.Random.Range(-1.5f, 1.5f) * tiltScale;
+            float randZ = (-10f + tiltIndex * 5f) * tiltScale
+                          + UnityEngine.Random.Range(-1.5f, 1.5f) * tiltScale;
+            Vector3 hoverBasePosition = Vector3.zero;
 
             passiveButton.OnMouseOver.AddListener((UnityAction)(() =>
             {
-                var pos = newRoleObj.transform.localPosition;
-                newRoleObj.transform.localPosition = new Vector3(pos.x, pos.y, pos.z - 10f);
+                if (Instance != null) Instance._hoveredCard = actualCard;
+                SetCardHoverDepth(newRoleObj.transform, hoverBasePosition, hovered: true);
+                newRoleObj.transform.localScale = Vector3.one * (cardScale * 1.075f);
             }));
             passiveButton.OnMouseOut.AddListener((UnityAction)(() =>
             {
-                var pos = newRoleObj.transform.localPosition;
-                newRoleObj.transform.localPosition = new Vector3(pos.x, pos.y, pos.z + 10f);
+                if (Instance != null && Instance._hoveredCard == actualCard)
+                    Instance._hoveredCard = null;
+                SetCardHoverDepth(newRoleObj.transform, hoverBasePosition, hovered: false);
+                newRoleObj.transform.localScale = Vector3.one * cardScale;
             }));
 
             newRoleObj.transform.localRotation = Quaternion.Euler(0f, 0f, -randZ);
 
             if (useGrid)
             {
-                int cols    = Mathf.CeilToInt(totalCards / 2f);
-                int row     = cardIndex / cols;
-                int col     = cardIndex % cols;
-
+                int cols = Mathf.CeilToInt(totalCards / 2f);
+                int row = cardIndex / cols;
+                int col = cardIndex % cols;
                 float cardW = 2.5f * cardScale;
                 float cardH = 3.7f * cardScale;
-                float xGap  = cardW + spacing;
-                float yGap  = cardH + spacing * 0.5f;
-
+                float xGap = cardW + spacing;
+                float yGap = cardH + spacing * 0.5f;
                 float totalW = cols * xGap - spacing;
                 float startX = -totalW / 2f + cardW / 2f;
                 float startY = yGap / 2f;
-
-                float xPos = startX + col * xGap;
-                float yPos = startY - row * yGap;
-
-                newRoleObj.transform.localPosition = new Vector3(xPos, yPos, cardIndex);
+                newRoleObj.transform.localPosition = new Vector3(
+                    startX + col * xGap, startY - row * yGap, cardIndex);
             }
             else
             {
@@ -313,10 +675,11 @@ namespace DraftModeTOUM
                     newRoleObj.transform.localPosition.x, 0f, cardIndex);
             }
 
+            hoverBasePosition = newRoleObj.transform.localPosition;
             newRoleObj.transform.localScale = Vector3.one * cardScale;
 
-            roleText.text    = roleName;
-            teamText.text    = teamName;
+            roleText.text = roleName;
+            teamText.text = teamName;
             roleImage.sprite = icon;
             roleImage.SetSizeLimit(2.8f);
             var cardBgRenderer = actualCard.GetComponent<SpriteRenderer>();
@@ -326,16 +689,38 @@ namespace DraftModeTOUM
             teamText.fontSizeMax = Mathf.Lerp(4f, 2f, Mathf.InverseLerp(3f, 9f, totalCards));
             teamText.enableAutoSizing = true;
 
-            rollover.OutColor  = color;
-            rollover.OverColor = Color.white;
-            roleText.color     = color;
+            rollover.OutColor = color;
+            rollover.OverColor = new Color(
+                Mathf.Min(color.r * 1.3f, 1f),
+                Mathf.Min(color.g * 1.3f, 1f),
+                Mathf.Min(color.b * 1.3f, 1f),
+                color.a);
+            roleText.color = color;
             teamText.fontSizeMax = 3.8f;
-            teamText.color       = GetTeamColor(teamName);
+            teamText.color = GetTeamColor(teamName);
+
+            // Set sorting so cards render above backdrop
+            foreach (var sr in newRoleObj.GetComponentsInChildren<SpriteRenderer>(true))
+            { sr.sortingLayerName = "UI"; sr.sortingOrder = 70; }
+            foreach (var tmp in newRoleObj.GetComponentsInChildren<TMPro.TMP_Text>(true))
+            {
+                var rr = tmp.GetComponent<Renderer>();
+                if (rr != null) { rr.sortingLayerName = "UI"; rr.sortingOrder = 74; }
+            }
+
+            AttachAllianceAura(actualCard, teamName);
 
             return passiveButton;
         }
 
-        // ── Card animation (unchanged) ────────────────────────────────────────
+        private static void SetCardHoverDepth(Transform holder, Vector3 hoverBasePosition, bool hovered)
+        {
+            if (holder == null) return;
+            float z = hoverBasePosition.z + (hovered ? -10f : 0f);
+            holder.localPosition = new Vector3(hoverBasePosition.x, hoverBasePosition.y, z);
+        }
+
+        // ── Card animation ────────────────────────────────────────────────────
 
         private static IEnumerator CoAnimateCards(Transform rolesHolder, float cardScale, bool useGrid, int totalCards)
         {
@@ -346,23 +731,90 @@ namespace DraftModeTOUM
             {
                 if (rolesHolder == null) yield break;
                 Transform card = rolesHolder.GetChild(i);
-                if (card == null) continue;
-                if (card.childCount == 0) continue;
+                if (card == null || card.childCount == 0) continue;
                 Transform child = card.GetChild(0);
                 if (child == null) continue;
                 int animIndex = useGrid ? (i % cols) : i;
-                yield return CoAnimateCardIn(child, animIndex);
-                if (child == null) continue;
-                try { Coroutines.Start(MiscUtils.BetterBloop(child, finalSize: cardScale, duration: 0.22f, intensity: 0.16f)); }
-                catch (Exception bex) { DraftModePlugin.Logger.LogWarning($"[DraftScreen] BetterBloop failed: {bex.Message}"); }
-                yield return new WaitForSeconds(0.08f);
+                float stagger = Mathf.Min(i, 7) * DraftCardRevealStaggerSeconds;
+                Coroutines.Start(CoAnimateCardRevealSequence(child, animIndex, totalCards, cardScale, stagger));
             }
 
+            yield return CoWaitForSharedReadyGate(totalCards);
             if (Instance != null) Instance._cardsReady = true;
             DraftNetworkHelper.NotifyPickerReady();
         }
 
-        private static IEnumerator CoAnimateCardIn(Transform card, int currentCard)
+        private static IEnumerator CoWaitForSharedReadyGate(int totalCards)
+        {
+            float revealBudget = 0.48f + Mathf.Min(Mathf.Max(0, totalCards - 1), 7) * DraftCardRevealStaggerSeconds;
+            yield return new WaitForSeconds(Mathf.Max(0f, Mathf.Max(DraftReadyGateSeconds, revealBudget)));
+        }
+
+        private static IEnumerator CoAnimateCardRevealSequence(Transform child, int animIndex, int totalCards, float cardScale, float stagger)
+        {
+            if (stagger > 0f)
+                yield return new WaitForSeconds(stagger);
+            if (child == null) yield break;
+
+            yield return CoAnimateCardIn(child, animIndex, totalCards, cardScale);
+            if (child == null) yield break;
+
+            Instance?.RegisterIdleCard(child);
+
+            try
+            {
+                Coroutines.Start(MiscUtils.BetterBloop(child, finalSize: cardScale, duration: 0.22f, intensity: 0.16f));
+            }
+            catch (Exception bex)
+            {
+                DraftModePlugin.Logger.LogWarning($"[DraftScreen] BetterBloop failed: {bex.Message}");
+            }
+
+            Coroutines.Start(CoAllianceRevealEffect(child));
+        }
+
+        private static IEnumerator CoAllianceRevealEffect(Transform card)
+        {
+            if (card == null) yield break;
+
+            // Use the aura that's already attached (fixed faction color)
+            var visuals = DraftCardVisualCache(card);
+            Color color = visuals.Aura != null ? visuals.Aura.color : new Color(0f, 0.95f, 1f, 0.46f);
+            color.a = 0.68f;
+            SetAllianceAura(card, color, 0.68f, 1.18f);
+
+            var auraBurst = new GameObject("DraftCardAllianceAuraBurst");
+            auraBurst.transform.SetParent(card, false);
+            auraBurst.transform.localPosition = new Vector3(0f, 0f, -0.74f);
+            auraBurst.transform.localScale = new Vector3(4.2f, 5.6f, 1f);
+            var auraSr = auraBurst.AddComponent<SpriteRenderer>();
+            auraSr.sprite = MakeSoftGlowSprite();
+            auraSr.color = new Color(color.r, color.g, color.b, 0.56f);
+            auraSr.sortingLayerName = "UI";
+            auraSr.sortingOrder = 77;
+
+            const float duration = 0.5f;
+            for (float timer = 0f; timer < duration; timer += Time.deltaTime)
+            {
+                if (auraBurst == null) yield break;
+                float t = Mathf.Clamp01(timer / duration);
+                float eased = Mathf.SmoothStep(0f, 1f, t);
+                SetAllianceAura(card, color, Mathf.Lerp(0.72f, 0.26f, t), Mathf.Lerp(1.22f, 1f, t));
+                if (auraSr != null)
+                {
+                    auraBurst.transform.localScale = new Vector3(
+                        Mathf.Lerp(4.2f, 5.4f, eased), Mathf.Lerp(5.6f, 7.1f, eased), 1f);
+                    auraSr.color = new Color(color.r, color.g, color.b, Mathf.Lerp(0.56f, 0f, t));
+                }
+                yield return null;
+            }
+
+            SetAllianceAura(card, color, 0.26f, 1f);
+            if (auraBurst != null)
+                try { Destroy(auraBurst); } catch { }
+        }
+
+        private static IEnumerator CoAnimateCardIn(Transform card, int currentCard, int totalCards, float cardScale)
         {
             if (card == null) yield break;
 
@@ -371,51 +823,65 @@ namespace DraftModeTOUM
             float randZ = -10f + currentCard * 5f + UnityEngine.Random.Range(-1.5f, 0f);
             if (currentCard == 0) { randY = 0f; randZ = -2f; }
 
+            float center = (totalCards - 1) * 0.5f;
+            float side = totalCards <= 1 ? 0f : (currentCard <= center ? -1f : 1f);
+            Vector3 targetPos = new Vector3(card.localPosition.x, randY, card.localPosition.z);
+            Vector3 startPos = targetPos + new Vector3(side * 2.7f, -2.35f, 0f);
+            Quaternion targetRot = Quaternion.Euler(0f, 0f, -randZ);
+            Quaternion startRot = Quaternion.Euler(0f, 0f, -randZ + side * 26f + 10f);
+
             if (card == null) yield break;
-            card.localRotation = Quaternion.Euler(0f, 0f, -randZ);
-            card.localPosition = new Vector3(card.localPosition.x, card.localPosition.y - 5f, card.localPosition.z);
-            card.localRotation = Quaternion.Euler(0f, 0f, 14f);
-            card.localScale    = new Vector3(0.15f, 0.15f, 0.15f);
+            card.localPosition = startPos;
+            card.localRotation = startRot;
+            card.localScale = Vector3.one * (cardScale * 0.62f);
             card.parent.gameObject.SetActive(true);
 
-            for (float timer = 0f; timer < 0.35f; timer += Time.deltaTime)
+            const float duration = 0.46f;
+            for (float timer = 0f; timer < duration; timer += Time.deltaTime)
             {
                 if (card == null) yield break;
-                float t = timer / 0.35f;
-                card.localPosition = new Vector3(
-                    card.localPosition.x,
-                    Mathf.SmoothStep(-5f, randY, t),
-                    card.localPosition.z);
-                card.localRotation = Quaternion.Euler(
-                    0f, 0f, Mathf.SmoothStep(-randZ + 2.5f, -randZ, t));
+                float t = Mathf.Clamp01(timer / duration);
+                float eased = EaseOutBack(t);
+                card.localPosition = Vector3.LerpUnclamped(startPos, targetPos, eased);
+                card.localRotation = Quaternion.Lerp(startRot, targetRot, Mathf.SmoothStep(0f, 1f, t));
+                card.localScale = Vector3.one * Mathf.Lerp(cardScale * 0.62f, cardScale, Mathf.SmoothStep(0f, 1f, t));
                 yield return null;
             }
 
             if (card == null) yield break;
-            card.localPosition = new Vector3(card.localPosition.x, randY, card.localPosition.z);
-            card.localRotation = Quaternion.Euler(0f, 0f, -randZ);
+            card.localPosition = targetPos;
+            card.localRotation = targetRot;
+            card.localScale = Vector3.one * cardScale;
+        }
+
+        private static float EaseOutBack(float t)
+        {
+            const float c1 = 1.70158f, c3 = c1 + 1f;
+            return 1f + c3 * Mathf.Pow(t - 1f, 3f) + c1 * Mathf.Pow(t - 1f, 2f);
         }
 
         // ── Update ────────────────────────────────────────────────────────────
 
         private float _localTimeLeft = -1f;
-        private bool  _cardsReady    = false;
+        private bool _cardsReady = false;
 
         private void Update()
         {
             if (HudManager.Instance?.FullScreen != null)
                 HudManager.Instance.FullScreen.color = Color.clear;
 
-            // Keep the top label clean — only the static "Pick Your Role!" text, no timer
+            UpdateSelectionBackdrop();
+            UpdateCardIdleMotion();
+
             if (_statusText != null)
                 _statusText.text = "<color=#FFFFFF><b>Pick Your Role!</b></color>";
 
-            // Bottom-center timer label
             if (_timerText != null)
             {
                 if (_hasPicked || !DraftManager.IsDraftActive || !_cardsReady)
                 {
                     _timerText.text = string.Empty;
+                    HideTimerProgressLine();
                 }
                 else
                 {
@@ -431,9 +897,17 @@ namespace DraftModeTOUM
                         secs = Mathf.Max(0, Mathf.CeilToInt(_localTimeLeft));
                     }
 
-                    string color = secs <= 5 ? "#FF5555" : "#FFD700";
+                    bool urgent = secs <= 5;
+                    string color = urgent ? "#FF5555" : "#FFD700";
+                    float timerPulse = urgent ? 1f + Mathf.Sin(Time.time * 10f) * 0.08f : 1f;
+                    _timerText.transform.localScale = Vector3.one * timerPulse;
                     _timerText.text =
                         $"<color={color}><b>{secs} Second{(secs != 1 ? "s" : "")} Remaining</b></color>";
+
+                    float timeForBar = AmongUsClient.Instance.AmHost
+                        ? DraftManager.TurnTimeLeft
+                        : _localTimeLeft;
+                    UpdateTimerProgressLine(timeForBar, urgent);
                 }
             }
         }
@@ -449,5 +923,47 @@ namespace DraftModeTOUM
         }
 
         private void DestroySelf() => Hide();
+
+        // ── Sprite factories ──────────────────────────────────────────────────
+
+        private static Sprite _softGlowSprite;
+        private static Sprite MakeSoftGlowSprite()
+        {
+            if (_softGlowSprite != null) return _softGlowSprite;
+            const int size = 64;
+            var tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
+            tex.hideFlags = HideFlags.HideAndDontSave;
+            var px = new Color[size * size];
+            Vector2 center = new Vector2((size - 1) * 0.5f, (size - 1) * 0.5f);
+            float radius = size * 0.5f;
+            for (int y = 0; y < size; y++)
+            for (int x = 0; x < size; x++)
+            {
+                float d = Vector2.Distance(new Vector2(x, y), center) / radius;
+                float a = Mathf.Clamp01(1f - d);
+                a = a * a * (3f - 2f * a);
+                px[y * size + x] = new Color(1f, 1f, 1f, a);
+            }
+            tex.SetPixels(px);
+            tex.Apply();
+            _softGlowSprite = Sprite.Create(tex, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f), size);
+            _softGlowSprite.hideFlags = HideFlags.HideAndDontSave;
+            return _softGlowSprite;
+        }
+
+        private static Sprite _whiteSprite;
+        private static Sprite MakeWhiteSprite()
+        {
+            if (_whiteSprite != null) return _whiteSprite;
+            var tex = new Texture2D(4, 4, TextureFormat.RGBA32, false);
+            tex.hideFlags = HideFlags.HideAndDontSave;
+            var px = new Color[16];
+            for (int i = 0; i < px.Length; i++) px[i] = Color.white;
+            tex.SetPixels(px);
+            tex.Apply();
+            _whiteSprite = Sprite.Create(tex, new Rect(0, 0, 4, 4), new Vector2(0.5f, 0.5f), 4f);
+            _whiteSprite.hideFlags = HideFlags.HideAndDontSave;
+            return _whiteSprite;
+        }
     }
 }

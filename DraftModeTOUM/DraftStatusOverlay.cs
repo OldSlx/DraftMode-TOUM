@@ -18,36 +18,60 @@ namespace DraftModeTOUM
     [RegisterInIl2Cpp]
     public sealed class DraftStatusOverlay(IntPtr ip) : MonoBehaviour(ip)
     {
-        private static DraftStatusOverlay? _instance;
+        private static DraftStatusOverlay _instance;
 
-        private GameObject?  _root;
-        private GameObject?  _bgOverlay;
-        private TextMeshPro? _yourNumberLabel;
-        private TextMeshPro? _yourNumberValue;
-        private TextMeshPro? _nowPickingLabel;
-        private TextMeshPro? _nowPickingValue;
-        private GameObject?  _roleCardNewRoleObj;
+        private GameObject  _root;
+        private GameObject  _bgOverlay;
 
-        private static GameObject? _cachedRolePrefab;
+        // ── Galaxy backdrop (minimalist, no hover-driven color changes) ────────
+        private GameObject      _backdropArt;
+        private SpriteRenderer  _backdropHaloRenderer;
+        private SpriteRenderer  _backdropWashRenderer;
+        private SpriteRenderer  _backdropHorizonRenderer;
+        private readonly List<SpriteRenderer> _backdropBeamRenderers   = new();
+        private readonly List<SpriteRenderer> _backdropParticleRenderers = new();
+        private readonly List<Vector3>        _backdropParticleBasePositions = new();
+        private float _waitAnimTime = 0f;
+        // ─────────────────────────────────────────────────────────────────────
+
+        private TextMeshPro _yourNumberLabel;
+        private TextMeshPro _yourNumberValue;
+        private TextMeshPro _nowPickingLabel;
+        private TextMeshPro _nowPickingValue;
+        private GameObject  _roleCardNewRoleObj;
+
+        private static GameObject _cachedRolePrefab;
 
         private ushort?      _pendingRoleId      = null;
         private ushort?      _shownRoleId        = null;
         private int          _cachedMySlot       = -1;
         private int          _cachedPickerSlot   = -1;
         private int          _cachedPickerCount  = -1;
+        private bool         _cachedIsMyTurn     = false;
         private OverlayState _currentState       = OverlayState.Hidden;
 
-        // Track whether we hid the card due to a menu being open so we can restore it
         private bool _cardHiddenForMenu = false;
 
-        private List<GameObject> _hiddenHudChildren = new();
+        private List<GameObject> _hiddenHudChildren = new List<GameObject>();
+
+        // ── Throttle timers ───────────────────────────────────────────────────
+        private float _menuCheckTimer   = 0f;
+        private const float MenuCheckInterval = 0.1f;
+        private bool  _lastMenuOpen     = false;
+
+        private float _slotCheckTimer   = 0f;
+        private const float SlotCheckInterval = 0.05f;
+
+        // ── Cached scene-object references ────────────────────────────────────
+        private static GameStartManager  _cachedGsm;
+        private static LobbyInfoPane     _cachedLobbyPane;
 
         private static readonly Color WaitingBgColor = new Color(0f, 0f, 0f, 1f);
 
         private static readonly Vector3 CardHudPos = new Vector3(2.0f, 0.3f, -21f);
-        private const float CardScale              = 0.55f;
-        private const float CardTiltDeg            = -8f;
-        private const float TeamNameFontSize       = 3.8f;
+        private const float CardScale         = 0.55f;
+        private const float CardTiltDeg       = -8f;
+        private const float TeamNameFontSize  = 3.8f;
 
         public static void EnsureExists()
         {
@@ -60,7 +84,7 @@ namespace DraftModeTOUM
         public static void SetState(OverlayState state)
         {
             EnsureExists();
-            _instance!._currentState = state;
+            _instance._currentState = state;
             _instance.UpdateVisibility();
         }
 
@@ -74,12 +98,17 @@ namespace DraftModeTOUM
         {
             EnsureExists();
             DraftModePlugin.Logger.LogInfo($"[DraftStatusOverlay] NotifyLocalPlayerPicked roleId={roleId}");
-            if (roleId != _instance!._shownRoleId)
+            if (roleId != _instance._shownRoleId)
             {
                 _instance._shownRoleId   = roleId;
                 _instance._pendingRoleId = null;
                 _instance.ShowRoleCard(roleId);
             }
+        }
+
+        public static void NotifySlotLocked(int slot)
+        {
+            // Minimal notification — no receipt label in this branch
         }
 
         public static void ClearHudReferences()
@@ -88,6 +117,16 @@ namespace DraftModeTOUM
             _instance._hiddenHudChildren.Clear();
             _instance._root             = null;
             _instance._bgOverlay        = null;
+
+            // Clear backdrop refs
+            _instance._backdropArt      = null;
+            _instance._backdropHaloRenderer = null;
+            _instance._backdropWashRenderer = null;
+            _instance._backdropHorizonRenderer = null;
+            _instance._backdropBeamRenderers.Clear();
+            _instance._backdropParticleRenderers.Clear();
+            _instance._backdropParticleBasePositions.Clear();
+
             _instance._yourNumberLabel  = null;
             _instance._yourNumberValue  = null;
             _instance._nowPickingLabel  = null;
@@ -98,7 +137,10 @@ namespace DraftModeTOUM
             _instance._cachedMySlot     = -1;
             _instance._cachedPickerSlot = -1;
             _instance._cachedPickerCount = -1;
+            _instance._cachedIsMyTurn   = false;
             _cachedRolePrefab           = null;
+            _cachedGsm                  = null;
+            _cachedLobbyPane            = null;
         }
 
         // ── Lifecycle ─────────────────────────────────────────────────────────
@@ -134,13 +176,15 @@ namespace DraftModeTOUM
             bgSr.sprite           = MakeWhiteSprite();
             bgSr.color            = WaitingBgColor;
             bgSr.sortingLayerName = "UI";
-            bgSr.sortingOrder     = 49;
+            bgSr.sortingOrder     = 42;
 
             var cam    = Camera.main;
             float camH = cam != null ? cam.orthographicSize * 2f : 6f;
             float camW = camH * ((float)Screen.width / Screen.height);
             _bgOverlay.transform.localScale = new Vector3(camW, camH, 1f);
             _bgOverlay.SetActive(false);
+
+            BuildBackdropArt(camW, camH);
 
             _root = new GameObject("DraftOverlayRoot");
             _root.transform.SetParent(HudManager.Instance.transform, false);
@@ -162,6 +206,169 @@ namespace DraftModeTOUM
             _root.SetActive(false);
         }
 
+        // ── Galaxy backdrop art ───────────────────────────────────────────────
+
+        private void BuildBackdropArt(float camW, float camH)
+        {
+            if (HudManager.Instance == null) return;
+
+            _backdropArt = new GameObject("DraftBackdropArt");
+            _backdropArt.transform.SetParent(HudManager.Instance.transform, false);
+            _backdropArt.transform.localPosition = new Vector3(0f, 0f, 0.85f);
+
+            _backdropWashRenderer = MakeBackdropArtSprite(
+                "DraftWaitingBackdropWash",
+                new Vector3(0f, 0.02f, 0.03f),
+                new Vector3(camW * 0.98f, camH * 0.42f, 1f),
+                MakeSoftGlowSprite(),
+                new Color(0f, 0.78f, 1f, 0.12f),
+                43);
+
+            var leftBeam = MakeBackdropArtSprite(
+                "DraftWaitingBackdropBeamLeft",
+                new Vector3(-camW * 0.34f, -0.02f, 0.01f),
+                new Vector3(camW * 0.13f, camH * 0.82f, 1f),
+                MakeSoftGlowSprite(),
+                new Color(1f, 0.82f, 0.12f, 0.12f),
+                44);
+            leftBeam.transform.localRotation = Quaternion.Euler(0f, 0f, -13f);
+            _backdropBeamRenderers.Add(leftBeam);
+
+            var rightBeam = MakeBackdropArtSprite(
+                "DraftWaitingBackdropBeamRight",
+                new Vector3(camW * 0.34f, -0.02f, 0.01f),
+                new Vector3(camW * 0.13f, camH * 0.82f, 1f),
+                MakeSoftGlowSprite(),
+                new Color(0.72f, 0.42f, 1f, 0.10f),
+                44);
+            rightBeam.transform.localRotation = Quaternion.Euler(0f, 0f, 13f);
+            _backdropBeamRenderers.Add(rightBeam);
+
+            _backdropHorizonRenderer = MakeBackdropArtSprite(
+                "DraftWaitingBackdropHorizon",
+                new Vector3(0f, -camH * 0.18f, 0f),
+                new Vector3(camW * 0.82f, 0.055f, 1f),
+                MakeSoftGlowSprite(),
+                new Color(0f, 0.95f, 1f, 0.22f),
+                45);
+
+            const int particleCount = 6;
+            for (int i = 0; i < particleCount; i++)
+            {
+                float x = Mathf.Sin(i * 1.77f) * camW * 0.42f;
+                float y = Mathf.Cos(i * 1.31f) * camH * 0.28f;
+                var particle = MakeBackdropArtSprite(
+                    "DraftWaitingBackdropParticle",
+                    new Vector3(x, y, -0.02f),
+                    Vector3.one * (0.035f + (i % 3) * 0.012f),
+                    MakeSoftGlowSprite(),
+                    new Color(0.5f, 0.95f, 1f, 0.20f),
+                    46);
+                _backdropParticleRenderers.Add(particle);
+                _backdropParticleBasePositions.Add(particle.transform.localPosition);
+            }
+
+            MakeBackdropHalo(camW, camH);
+
+            _backdropArt.SetActive(false);
+        }
+
+        private SpriteRenderer MakeBackdropArtSprite(string name, Vector3 pos, Vector3 scale,
+            Sprite sprite, Color color, int order)
+        {
+            var go = new GameObject(name);
+            go.transform.SetParent(_backdropArt.transform, false);
+            go.transform.localPosition = pos;
+            go.transform.localScale = scale;
+            var sr = go.AddComponent<SpriteRenderer>();
+            sr.sprite = sprite;
+            sr.color = color;
+            sr.sortingLayerName = "UI";
+            sr.sortingOrder = order;
+            return sr;
+        }
+
+        private void MakeBackdropHalo(float camW, float camH)
+        {
+            if (_backdropArt == null) return;
+            var halo = new GameObject("DraftBackdropHalo");
+            halo.transform.SetParent(_backdropArt.transform, false);
+            halo.transform.localPosition = new Vector3(0f, 0f, 0.02f);
+            halo.transform.localScale = new Vector3(camW * 0.72f, camH * 0.32f, 1f);
+
+            _backdropHaloRenderer = halo.AddComponent<SpriteRenderer>();
+            _backdropHaloRenderer.sprite = MakeSoftGlowSprite();
+            _backdropHaloRenderer.color = new Color(0.18f, 0.9f, 1f, 0.075f);
+            _backdropHaloRenderer.sortingLayerName = "UI";
+            _backdropHaloRenderer.sortingOrder = 43;
+        }
+
+        // Backdrop animates with fixed colors — no turn-state color changes
+        private void UpdateBackdropMotion()
+        {
+            if (_backdropArt == null || !_backdropArt.activeSelf) return;
+
+            float pulse = (Mathf.Sin(_waitAnimTime * 1.7f) + 1f) * 0.5f;
+            _backdropArt.transform.localRotation =
+                Quaternion.Euler(0f, 0f, Mathf.Sin(_waitAnimTime * 0.18f) * 0.45f);
+
+            if (_backdropHaloRenderer != null)
+            {
+                var c = _backdropHaloRenderer.color;
+                c.a = 0.055f + pulse * 0.025f;
+                _backdropHaloRenderer.color = c;
+            }
+
+            if (_backdropWashRenderer != null)
+            {
+                // Fixed cyan-blue wash — no my-turn color blending
+                var wash = new Color(0f, 0.78f, 1f, 0.11f + pulse * 0.08f);
+                _backdropWashRenderer.color = wash;
+                _backdropWashRenderer.transform.localScale =
+                    new Vector3(8.7f + pulse * 0.55f, 2.9f + pulse * 0.24f, 1f);
+            }
+
+            for (int i = 0; i < _backdropBeamRenderers.Count; i++)
+            {
+                var beam = _backdropBeamRenderers[i];
+                if (beam == null) continue;
+                float side = i == 0 ? -1f : 1f;
+                float sway = Mathf.Sin(_waitAnimTime * 0.55f + i * 1.7f) * 0.28f;
+                beam.transform.localPosition = new Vector3(
+                    side * (2.85f + sway),
+                    Mathf.Cos(_waitAnimTime * 0.42f + i) * 0.14f, 0.01f);
+                beam.transform.localRotation =
+                    Quaternion.Euler(0f, 0f, side * (12f + pulse * 8f));
+                // Fixed beam colors — left warm gold, right cool purple
+                var c = i == 0
+                    ? new Color(1f, 0.82f, 0.12f, 0.14f + pulse * 0.06f)
+                    : new Color(0.72f, 0.42f, 1f, 0.12f + pulse * 0.06f);
+                beam.color = c;
+            }
+
+            if (_backdropHorizonRenderer != null)
+            {
+                var c = new Color(0f, 0.95f, 1f, 0.24f + pulse * 0.08f);
+                _backdropHorizonRenderer.color = c;
+                _backdropHorizonRenderer.transform.localScale =
+                    new Vector3(7.4f + pulse * 0.28f, 0.055f + pulse * 0.018f, 1f);
+            }
+
+            for (int i = 0; i < _backdropParticleRenderers.Count; i++)
+            {
+                var particle = _backdropParticleRenderers[i];
+                if (particle == null || i >= _backdropParticleBasePositions.Count) continue;
+                Vector3 basePos = _backdropParticleBasePositions[i];
+                float phase = i * 0.73f;
+                particle.transform.localPosition = basePos + new Vector3(
+                    Mathf.Sin(_waitAnimTime * 0.75f + phase) * 0.18f,
+                    Mathf.Cos(_waitAnimTime * 0.52f + phase) * 0.14f, 0f);
+                particle.transform.localScale =
+                    Vector3.one * (0.035f + (i % 3) * 0.012f + pulse * 0.035f);
+                particle.color = new Color(0.5f, 0.95f, 1f, 0.22f + pulse * 0.12f);
+            }
+        }
+
         // ── Role prefab ───────────────────────────────────────────────────────
 
         private static bool EnsureRolePrefab()
@@ -178,7 +385,7 @@ namespace DraftModeTOUM
                 _cachedRolePrefab = holderGo.gameObject;
                 return true;
             }
-            catch (System.Exception ex)
+            catch (Exception ex)
             {
                 DraftModePlugin.Logger.LogWarning($"[DraftStatusOverlay] Prefab load failed: {ex.Message}");
                 return false;
@@ -224,11 +431,24 @@ namespace DraftModeTOUM
                 teamText.enableAutoSizing = true;
                 teamText.color            = GetTeamColor(teamName);
             }
-            if (roleImage != null) { roleImage.sprite = icon; roleImage.SetSizeLimit(2.8f); roleImage.color = Color.white; }
+            if (roleImage != null)
+            {
+                roleImage.sprite = icon;
+                roleImage.SetSizeLimit(2.8f);
+                roleImage.color  = Color.white;
+            }
 
             var cardBg = actualCard.GetComponent<SpriteRenderer>();
             if (cardBg   != null) cardBg.color  = color;
-            if (rollover != null) { rollover.OutColor = color; rollover.OverColor = Color.white; }
+            if (rollover != null)
+            {
+                rollover.OutColor  = color;
+                rollover.OverColor = new Color(
+                    Mathf.Min(color.r * 1.3f, 1f),
+                    Mathf.Min(color.g * 1.3f, 1f),
+                    Mathf.Min(color.b * 1.3f, 1f),
+                    color.a);
+            }
             if (roleText != null) roleText.color = color;
 
             foreach (var tmp in _roleCardNewRoleObj.GetComponentsInChildren<TMPro.TMP_Text>())
@@ -258,16 +478,16 @@ namespace DraftModeTOUM
 
                 passiveButton.OnClick.RemoveAllListeners();
                 ushort capturedId = roleId;
-                passiveButton.OnClick.AddListener((System.Action)(() => OpenWiki(capturedId)));
+                passiveButton.OnClick.AddListener((Action)(() => OpenWiki(capturedId)));
 
                 passiveButton.OnMouseOver.RemoveAllListeners();
-                passiveButton.OnMouseOver.AddListener((System.Action)(() =>
+                passiveButton.OnMouseOver.AddListener((Action)(() =>
                 {
                     if (_roleCardNewRoleObj != null)
                         _roleCardNewRoleObj.transform.localScale = Vector3.one * (CardScale * 1.08f);
                 }));
                 passiveButton.OnMouseOut.RemoveAllListeners();
-                passiveButton.OnMouseOut.AddListener((System.Action)(() =>
+                passiveButton.OnMouseOut.AddListener((Action)(() =>
                 {
                     if (_roleCardNewRoleObj != null)
                         _roleCardNewRoleObj.transform.localScale = Vector3.one * CardScale;
@@ -301,7 +521,7 @@ namespace DraftModeTOUM
 
                 Coroutines.Start(CoWaitForWikiDestroyed(wiki));
             }
-            catch (System.Exception ex)
+            catch (Exception ex)
             {
                 DraftModePlugin.Logger.LogWarning($"[DraftStatusOverlay] Wiki open failed: {ex.Message}");
                 if (_roleCardNewRoleObj != null)
@@ -314,11 +534,19 @@ namespace DraftModeTOUM
         {
             while (wiki != null)
                 yield return null;
-            if (_roleCardNewRoleObj != null && !IsAnyMenuOpen())
+
+            // Force an immediate menu recheck — _lastMenuOpen may be stale from the throttle timer
+            _lastMenuOpen   = IsAnyMenuOpen();
+            _menuCheckTimer = 0f;
+
+            if (_roleCardNewRoleObj != null && !_lastMenuOpen)
+            {
                 _roleCardNewRoleObj.SetActive(true);
+                _cardHiddenForMenu = false;
+            }
         }
 
-        // ── Menu detection ────────────────────────────────────────────────────
+        // ── Menu detection — throttled to ~10 Hz ──────────────────────────────
 
         private static bool IsAnyMenuOpen()
         {
@@ -331,14 +559,13 @@ namespace DraftModeTOUM
                 var hud = HudManager.Instance;
                 if (hud != null)
                 {
-                    if (hud.GameMenu != null && hud.GameMenu.IsOpen)         return true;
-                    if (hud.Chat != null && hud.Chat.IsOpenOrOpening)        return true;
+                    if (hud.GameMenu != null && hud.GameMenu.IsOpen)    return true;
+                    if (hud.Chat != null && hud.Chat.IsOpenOrOpening)   return true;
                 }
 
                 if (FriendsListUI.Instance != null && FriendsListUI.Instance.IsOpen) return true;
             }
             catch { }
-
             return false;
         }
 
@@ -389,23 +616,36 @@ namespace DraftModeTOUM
         {
             if (_currentState == OverlayState.Hidden) return;
 
-            // ── Role card menu hide/show ───────────────────────────────────────
+            float dt = Time.deltaTime;
+
+            // Throttled menu check (~10 Hz)
+            _menuCheckTimer += dt;
+            if (_menuCheckTimer >= MenuCheckInterval)
+            {
+                _menuCheckTimer = 0f;
+                _lastMenuOpen   = IsAnyMenuOpen();
+            }
+
+            // Role card menu hide/show (uses cached result)
             if (_roleCardNewRoleObj != null)
             {
-                bool menuOpen = IsAnyMenuOpen();
-                if (menuOpen && _roleCardNewRoleObj.activeSelf)
+                if (_lastMenuOpen && _roleCardNewRoleObj.activeSelf)
                 {
                     _roleCardNewRoleObj.SetActive(false);
                     _cardHiddenForMenu = true;
                 }
-                else if (!menuOpen && _cardHiddenForMenu && !_roleCardNewRoleObj.activeSelf)
+                else if (!_lastMenuOpen && _cardHiddenForMenu && !_roleCardNewRoleObj.activeSelf)
                 {
                     _roleCardNewRoleObj.SetActive(true);
                     _cardHiddenForMenu = false;
                 }
             }
 
-            // ── Waiting state updates ─────────────────────────────────────────
+            // Always tick the backdrop animation time
+            _waitAnimTime += dt;
+            UpdateBackdropMotion();
+
+            // Waiting-state slot diff check (~20 Hz)
             if (_currentState == OverlayState.Waiting)
             {
                 if (_root == null) BuildUI();
@@ -413,26 +653,37 @@ namespace DraftModeTOUM
 
                 if (DraftManager.IsDraftActive)
                 {
-                    int mySlot      = DraftManager.GetSlotForPlayer(PlayerControl.LocalPlayer.PlayerId);
-                    int pickerSlot  = -1;
-                    int pickerCount = 0;
-                    foreach (var s in DraftManager.GetActivePickerStates())
+                    _slotCheckTimer += dt;
+                    if (_slotCheckTimer >= SlotCheckInterval)
                     {
-                        if (s == null || !s.IsPickingNow) continue;
-                        pickerCount++;
-                        if (pickerSlot < 0) pickerSlot = s.SlotNumber;
-                    }
+                        _slotCheckTimer = 0f;
 
-                    if (mySlot != _cachedMySlot || pickerSlot != _cachedPickerSlot || pickerCount != _cachedPickerCount)
-                    {
-                        _cachedMySlot      = mySlot;
-                        _cachedPickerSlot  = pickerSlot;
-                        _cachedPickerCount = pickerCount;
-                        UpdateContent();
+                        int mySlot      = DraftManager.GetSlotForPlayer(PlayerControl.LocalPlayer.PlayerId);
+                        int pickerSlot  = -1;
+                        int pickerCount = 0;
+                        bool isMyTurn   = false;
+                        foreach (var s in DraftManager.GetActivePickerStates())
+                        {
+                            if (s == null || !s.IsPickingNow) continue;
+                            pickerCount++;
+                            if (pickerSlot < 0) pickerSlot = s.SlotNumber;
+                            if (s.PlayerId == PlayerControl.LocalPlayer.PlayerId) isMyTurn = true;
+                        }
+
+                        if (mySlot != _cachedMySlot || pickerSlot != _cachedPickerSlot ||
+                            pickerCount != _cachedPickerCount || isMyTurn != _cachedIsMyTurn)
+                        {
+                            _cachedMySlot      = mySlot;
+                            _cachedPickerSlot  = pickerSlot;
+                            _cachedPickerCount = pickerCount;
+                            _cachedIsMyTurn    = isMyTurn;
+                            UpdateContent();
+                        }
                     }
                 }
             }
 
+            // Pending role card show
             if (_pendingRoleId.HasValue && _pendingRoleId != _shownRoleId)
             {
                 _shownRoleId   = _pendingRoleId;
@@ -457,6 +708,8 @@ namespace DraftModeTOUM
                 if (s.PlayerId == PlayerControl.LocalPlayer.PlayerId) isMyTurn = true;
             }
 
+            _cachedIsMyTurn = isMyTurn;
+
             if (_yourNumberValue != null)
                 _yourNumberValue.text = mySlot > 0 ? mySlot.ToString() : "?";
             if (_nowPickingValue != null)
@@ -476,45 +729,54 @@ namespace DraftModeTOUM
             {
                 _root.SetActive(false);
                 if (_bgOverlay != null) _bgOverlay.SetActive(false);
+                if (_backdropArt != null) _backdropArt.SetActive(false);
                 DestroyRoleCard();
                 _pendingRoleId = null;
                 _shownRoleId   = null;
+                _waitAnimTime  = 0f;
+                _menuCheckTimer = 0f;
+                _slotCheckTimer = 0f;
+                _lastMenuOpen   = false;
                 RestoreHudElements();
             }
             else if (_currentState == OverlayState.Waiting)
             {
                 _root.SetActive(true);
                 if (_bgOverlay != null) _bgOverlay.SetActive(true);
+                if (_backdropArt != null) _backdropArt.SetActive(true);
                 HideHudElements();
             }
             else if (_currentState == OverlayState.BackgroundOnly)
             {
                 _root.SetActive(false);
                 if (_bgOverlay != null) _bgOverlay.SetActive(true);
+                if (_backdropArt != null) _backdropArt.SetActive(true);
                 HideHudElements();
             }
         }
 
-        // ── HUD element hiding ────────────────────────────────────────────────
+        // ── HUD element hiding — uses cached references ───────────────────────
 
         private void HideHudElements()
         {
             _hiddenHudChildren.RemoveAll(go => go == null);
 
-            var gsm = UnityEngine.Object.FindObjectOfType<GameStartManager>();
-            if (gsm != null && gsm.gameObject.activeSelf)
+            if (_cachedGsm == null)
+                _cachedGsm = UnityEngine.Object.FindObjectOfType<GameStartManager>();
+            if (_cachedGsm != null && _cachedGsm.gameObject.activeSelf)
             {
-                gsm.gameObject.SetActive(false);
-                if (!_hiddenHudChildren.Contains(gsm.gameObject))
-                    _hiddenHudChildren.Add(gsm.gameObject);
+                _cachedGsm.gameObject.SetActive(false);
+                if (!_hiddenHudChildren.Contains(_cachedGsm.gameObject))
+                    _hiddenHudChildren.Add(_cachedGsm.gameObject);
             }
 
-            var lobbyInfoPane = UnityEngine.Object.FindObjectOfType<LobbyInfoPane>();
-            if (lobbyInfoPane != null && lobbyInfoPane.gameObject.activeSelf)
+            if (_cachedLobbyPane == null)
+                _cachedLobbyPane = UnityEngine.Object.FindObjectOfType<LobbyInfoPane>();
+            if (_cachedLobbyPane != null && _cachedLobbyPane.gameObject.activeSelf)
             {
-                lobbyInfoPane.gameObject.SetActive(false);
-                if (!_hiddenHudChildren.Contains(lobbyInfoPane.gameObject))
-                    _hiddenHudChildren.Add(lobbyInfoPane.gameObject);
+                _cachedLobbyPane.gameObject.SetActive(false);
+                if (!_hiddenHudChildren.Contains(_cachedLobbyPane.gameObject))
+                    _hiddenHudChildren.Add(_cachedLobbyPane.gameObject);
             }
         }
 
@@ -553,54 +815,65 @@ namespace DraftModeTOUM
             return tmp;
         }
 
-        // ── White sprite factory ──────────────────────────────────────────────
+        // ── Sprite factories ──────────────────────────────────────────────────
 
-        private static Sprite? _white;
+        private static Sprite _softGlow;
+        private static Sprite MakeSoftGlowSprite()
+        {
+            if (_softGlow != null) return _softGlow;
+            const int size = 64;
+            var tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
+            tex.hideFlags = HideFlags.HideAndDontSave;
+            var px = new Color[size * size];
+            Vector2 center = new Vector2((size - 1) * 0.5f, (size - 1) * 0.5f);
+            float radius = size * 0.5f;
+            for (int y = 0; y < size; y++)
+            for (int x = 0; x < size; x++)
+            {
+                float d = Vector2.Distance(new Vector2(x, y), center) / radius;
+                float a = Mathf.Clamp01(1f - d);
+                a = a * a * (3f - 2f * a);
+                px[y * size + x] = new Color(1f, 1f, 1f, a);
+            }
+            tex.SetPixels(px);
+            tex.Apply();
+            _softGlow = Sprite.Create(tex, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f), size);
+            _softGlow.hideFlags = HideFlags.HideAndDontSave;
+            return _softGlow;
+        }
+
+        private static Sprite _white;
         private static Sprite MakeWhiteSprite()
         {
             if (_white != null) return _white;
             var tex = new Texture2D(4, 4, TextureFormat.RGBA32, false);
             tex.hideFlags = HideFlags.HideAndDontSave;
-            var px  = new Color[16];
+            var px = new Color[16];
             for (int i = 0; i < 16; i++) px[i] = Color.white;
             tex.SetPixels(px);
             tex.Apply();
-            _white           = Sprite.Create(tex, new Rect(0, 0, 4, 4), new Vector2(0.5f, 0.5f), 4f);
+            _white = Sprite.Create(tex, new Rect(0, 0, 4, 4), new Vector2(0.5f, 0.5f), 4f);
             _white.hideFlags = HideFlags.HideAndDontSave;
             return _white;
         }
     }
 
     // ── PingTracker Harmony patches ───────────────────────────────────────────
-    //
-    // Harmony postfix execution order: HIGHER priority number runs FIRST.
-    //   Priority.First = 800  (us, prefix — skips vanilla Update)
-    //   Priority.Last  = 0    (Reactor and TOU-Mira postfixes append text here)
-    //   int.MinValue          (our postfix — guaranteed to run dead last, wipes text)
-    //
-    // Two separate patch classes are used because Harmony does not support
-    // mixing [HarmonyPrefix] and [HarmonyPostfix] with different priorities
-    // inside the same class reliably across all versions.
 
     [HarmonyPatch(typeof(PingTracker), nameof(PingTracker.Update))]
     public static class PingTrackerDraftPrefix
     {
-        // Runs before everything — skips the vanilla Update so "PING: X ms"
-        // is never written while draft is active.
         [HarmonyPrefix]
         [HarmonyPriority(Priority.First)]
         public static bool Prefix()
         {
-            return !DraftManager.IsDraftActive; // false = skip original
+            return !DraftManager.IsDraftActive;
         }
     }
 
     [HarmonyPatch(typeof(PingTracker), nameof(PingTracker.Update))]
     public static class PingTrackerDraftPostfix
     {
-        // int.MinValue is lower than Priority.Last (0), so this postfix runs
-        // after Reactor's and TOU-Mira's Priority.Last postfixes have both
-        // finished appending their mod-list and region text, then wipes it all.
         [HarmonyPostfix]
         [HarmonyPriority(int.MinValue)]
         public static void Postfix(PingTracker __instance)

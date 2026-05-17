@@ -23,7 +23,6 @@ namespace DraftModeTOUM
         private GameObject  _root;
         private GameObject  _bgOverlay;
 
-        // ── Galaxy backdrop (minimalist, no hover-driven color changes) ────────
         private GameObject      _backdropArt;
         private SpriteRenderer  _backdropHaloRenderer;
         private SpriteRenderer  _backdropWashRenderer;
@@ -32,7 +31,6 @@ namespace DraftModeTOUM
         private readonly List<SpriteRenderer> _backdropParticleRenderers = new();
         private readonly List<Vector3>        _backdropParticleBasePositions = new();
         private float _waitAnimTime = 0f;
-        // ─────────────────────────────────────────────────────────────────────
 
         private TextMeshPro _yourNumberLabel;
         private TextMeshPro _yourNumberValue;
@@ -51,11 +49,10 @@ namespace DraftModeTOUM
         private OverlayState _currentState       = OverlayState.Hidden;
 
         private bool _cardHiddenForMenu = false;
-        private bool _cardReady         = false;   // guards hover until pop-in finishes
+        private bool _cardReady         = false;
 
         private List<GameObject> _hiddenHudChildren = new List<GameObject>();
 
-        // ── Throttle timers ───────────────────────────────────────────────────
         private float _menuCheckTimer   = 0f;
         private const float MenuCheckInterval = 0.1f;
         private bool  _lastMenuOpen     = false;
@@ -63,7 +60,6 @@ namespace DraftModeTOUM
         private float _slotCheckTimer   = 0f;
         private const float SlotCheckInterval = 0.05f;
 
-        // ── Cached scene-object references ────────────────────────────────────
         private static GameStartManager  _cachedGsm;
         private static LobbyInfoPane     _cachedLobbyPane;
 
@@ -109,7 +105,6 @@ namespace DraftModeTOUM
 
         public static void NotifySlotLocked(int slot)
         {
-            // Minimal notification — no receipt label in this branch
         }
 
         public static void ClearHudReferences()
@@ -119,7 +114,6 @@ namespace DraftModeTOUM
             _instance._root             = null;
             _instance._bgOverlay        = null;
 
-            // Clear backdrop refs
             _instance._backdropArt      = null;
             _instance._backdropHaloRenderer = null;
             _instance._backdropWashRenderer = null;
@@ -144,8 +138,6 @@ namespace DraftModeTOUM
             _cachedLobbyPane            = null;
         }
 
-        // ── Lifecycle ─────────────────────────────────────────────────────────
-
         private void Awake()
         {
             if (_instance != null && _instance != this) { Destroy(gameObject); return; }
@@ -158,8 +150,6 @@ namespace DraftModeTOUM
             RestoreHudElements();
             if (_instance == this) _instance = null;
         }
-
-        // ── UI construction ───────────────────────────────────────────────────
 
         private void BuildUI()
         {
@@ -206,8 +196,6 @@ namespace DraftModeTOUM
 
             _root.SetActive(false);
         }
-
-        // ── Galaxy backdrop art ───────────────────────────────────────────────
 
         private void BuildBackdropArt(float camW, float camH)
         {
@@ -304,7 +292,6 @@ namespace DraftModeTOUM
             _backdropHaloRenderer.sortingOrder = 43;
         }
 
-        // Backdrop animates with fixed colors — no turn-state color changes
         private void UpdateBackdropMotion()
         {
             if (_backdropArt == null || !_backdropArt.activeSelf) return;
@@ -368,8 +355,6 @@ namespace DraftModeTOUM
             }
         }
 
-        // ── Role prefab ───────────────────────────────────────────────────────
-
         private static bool EnsureRolePrefab()
         {
             if (_cachedRolePrefab != null) return true;
@@ -390,8 +375,6 @@ namespace DraftModeTOUM
                 return false;
             }
         }
-
-        // ── Role card ─────────────────────────────────────────────────────────
 
         private void ShowRoleCard(ushort roleId)
         {
@@ -479,8 +462,6 @@ namespace DraftModeTOUM
                 ushort capturedId = roleId;
                 passiveButton.OnClick.AddListener((Action)(() => OpenWiki(capturedId)));
 
-                // Guard hover handlers so they cannot fire during the pop-in animation.
-                // _cardReady is set to true only after CoPopInCard fully completes.
                 passiveButton.OnMouseOver.RemoveAllListeners();
                 passiveButton.OnMouseOver.AddListener((Action)(() =>
                 {
@@ -497,11 +478,9 @@ namespace DraftModeTOUM
 
             _roleCardNewRoleObj.SetActive(true);
             _cardHiddenForMenu = false;
-            _cardReady         = false;   // will be set true when pop-in finishes
+            _cardReady         = false;
             Coroutines.Start(CoPopInCard(_roleCardNewRoleObj.transform, this));
         }
-
-        // ── Wiki ──────────────────────────────────────────────────────────────
 
         private void OpenWiki(ushort roleId)
         {
@@ -537,7 +516,6 @@ namespace DraftModeTOUM
             while (wiki != null)
                 yield return null;
 
-            // Force an immediate menu recheck — _lastMenuOpen may be stale from the throttle timer
             _lastMenuOpen   = IsAnyMenuOpen();
             _menuCheckTimer = 0f;
 
@@ -545,11 +523,9 @@ namespace DraftModeTOUM
             {
                 _roleCardNewRoleObj.SetActive(true);
                 _cardHiddenForMenu = false;
-                _cardReady         = true;   // card is fully visible again — re-enable hover
+                _cardReady         = true;
             }
         }
-
-        // ── Menu detection — throttled to ~10 Hz ──────────────────────────────
 
         private static bool IsAnyMenuOpen()
         {
@@ -571,8 +547,6 @@ namespace DraftModeTOUM
             catch { }
             return false;
         }
-
-        // ── Role card helpers ─────────────────────────────────────────────────
 
         private void DestroyRoleCard()
         {
@@ -599,7 +573,6 @@ namespace DraftModeTOUM
             if (holder != null)
                 holder.localScale = Vector3.one * CardScale;
 
-            // Animation complete — allow hover interaction now
             if (owner != null)
                 owner._cardReady = true;
         }
@@ -620,15 +593,12 @@ namespace DraftModeTOUM
             return Color.white;
         }
 
-        // ── Update ────────────────────────────────────────────────────────────
-
         private void Update()
         {
             if (_currentState == OverlayState.Hidden) return;
 
             float dt = Time.deltaTime;
 
-            // Throttled menu check (~10 Hz)
             _menuCheckTimer += dt;
             if (_menuCheckTimer >= MenuCheckInterval)
             {
@@ -636,7 +606,6 @@ namespace DraftModeTOUM
                 _lastMenuOpen   = IsAnyMenuOpen();
             }
 
-            // Role card menu hide/show (uses cached result)
             if (_roleCardNewRoleObj != null)
             {
                 if (_lastMenuOpen && _roleCardNewRoleObj.activeSelf)
@@ -648,16 +617,13 @@ namespace DraftModeTOUM
                 {
                     _roleCardNewRoleObj.SetActive(true);
                     _cardHiddenForMenu = false;
-                    // Card was hidden while the animation was already done, so re-allow hover.
                     _cardReady = true;
                 }
             }
 
-            // Always tick the backdrop animation time
             _waitAnimTime += dt;
             UpdateBackdropMotion();
 
-            // Waiting-state slot diff check (~20 Hz)
             if (_currentState == OverlayState.Waiting)
             {
                 if (_root == null) BuildUI();
@@ -695,7 +661,6 @@ namespace DraftModeTOUM
                 }
             }
 
-            // Pending role card show
             if (_pendingRoleId.HasValue && _pendingRoleId != _shownRoleId)
             {
                 _shownRoleId   = _pendingRoleId;
@@ -767,8 +732,6 @@ namespace DraftModeTOUM
             }
         }
 
-        // ── HUD element hiding — uses cached references ───────────────────────
-
         private void HideHudElements()
         {
             _hiddenHudChildren.RemoveAll(go => go == null);
@@ -800,8 +763,6 @@ namespace DraftModeTOUM
             _hiddenHudChildren.Clear();
         }
 
-        // ── Text factory ──────────────────────────────────────────────────────
-
         private static TextMeshPro MakeText(
             GameObject parent, string name,
             TMP_FontAsset font, Material fontMat,
@@ -826,6 +787,7 @@ namespace DraftModeTOUM
             if (r != null) { r.sortingLayerName = "UI"; r.sortingOrder = 50; }
             return tmp;
         }
+
         private static Sprite _softGlow;
         private static Sprite MakeSoftGlowSprite()
         {

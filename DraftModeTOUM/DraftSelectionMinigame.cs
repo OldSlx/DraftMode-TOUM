@@ -19,8 +19,6 @@ namespace DraftModeTOUM
     {
         public static DraftScreenController Instance { get; private set; }
 
-        // ── Card visual caches ────────────────────────────────────────────────
-
         private sealed class DraftCardVisuals
         {
             public SpriteRenderer Aura;
@@ -28,16 +26,13 @@ namespace DraftModeTOUM
 
         private sealed class DraftCardIdleCache
         {
-            public Transform Card;       // this is actualCard (child)
-            public Transform Holder;     // this is newRoleObj (parent)
-            public Vector3 BasePosition; // actualCard local position
+            public Transform Card; 
+            public Transform Holder; 
+            public Vector3 BasePosition; 
             public Quaternion BaseRotation;
         }
 
         private static readonly Dictionary<Transform, DraftCardVisuals> _cardVisuals = new();
-
-        // ── Fields ────────────────────────────────────────────────────────────
-
         private GameObject _screenRoot;
         private ushort[] _offeredRoleIds;
         private bool _hasPicked;
@@ -59,11 +54,7 @@ namespace DraftModeTOUM
 
         private readonly List<DraftCardIdleCache> _idleCardCaches = new();
         private readonly Dictionary<Transform, DraftCardIdleCache> _idleCardCacheByTransform = new();
-
-        // _hoveredCard tracks the actualCard (child) transform
         private Transform _hoveredCard;
-
-        // Backdrop animation — static color, no hover-driven RGB changes
         private readonly Color _backdropPulseColor = new Color(0f, 0.95f, 1f, 0.4f);
         private float _backdropPulse;
         private float _backdropTime;
@@ -90,8 +81,6 @@ namespace DraftModeTOUM
             if (lower.Contains("neutral")) return new Color32(180, 180, 180, 255);
             return Color.white;
         }
-
-        // ── Bottom-center timer label + progress bar ──────────────────────────
 
         private void BuildBottomTimer()
         {
@@ -173,8 +162,6 @@ namespace DraftModeTOUM
             }
         }
 
-        // ── Show / Hide ───────────────────────────────────────────────────────
-
         public static void Show(ushort[] roleIds)
         {
             Hide();
@@ -213,8 +200,6 @@ namespace DraftModeTOUM
             Destroy(Instance.gameObject);
             Instance = null;
         }
-
-        // ── Build screen ──────────────────────────────────────────────────────
 
         private void BuildScreen()
         {
@@ -350,8 +335,6 @@ namespace DraftModeTOUM
             return false;
         }
 
-        // ── Animated galaxy backdrop ──────────────────────────────────────────
-
         private void BuildSelectionBackdrop()
         {
             if (HudManager.Instance == null) return;
@@ -444,7 +427,6 @@ namespace DraftModeTOUM
             }
         }
 
-        // Backdrop animates with a fixed cyan/teal color — no hover-driven color changes
         private void UpdateSelectionBackdrop()
         {
             if (_selectionBackdrop == null) return;
@@ -513,12 +495,8 @@ namespace DraftModeTOUM
             }
         }
 
-        // ── Card idle motion ──────────────────────────────────────────────────
-
         private void RegisterIdleCard(Transform card, Transform holder)
         {
-            // card  = actualCard (child, the thing that was animated)
-            // holder = newRoleObj (parent, the layout-positioned wrapper)
             if (card == null) return;
             if (!_idleCardCacheByTransform.TryGetValue(card, out var cache))
             {
@@ -526,7 +504,6 @@ namespace DraftModeTOUM
                 _idleCardCacheByTransform[card] = cache;
                 _idleCardCaches.Add(cache);
             }
-            // Store actualCard's local position — this is stable post-animation
             cache.BasePosition = card.localPosition;
             cache.BaseRotation = card.localRotation;
         }
@@ -539,10 +516,6 @@ namespace DraftModeTOUM
                 var cache = _idleCardCaches[i];
                 var card = cache.Card;
                 if (card == null) continue;
-
-                // FIX: previously called SetCardToIdleBase here which snapped
-                // the card back every frame, fighting hover scale and triggering
-                // spurious OnMouseOut events. Now we simply skip hovered cards.
                 if (card == _hoveredCard) continue;
 
                 float phase = i * 0.79f;
@@ -553,9 +526,6 @@ namespace DraftModeTOUM
                     Quaternion.Euler(0f, 0f, Mathf.Sin(_backdropTime * 0.9f + phase) * 1.35f);
             }
         }
-
-        // ── Alliance aura (fixed per-faction color, no hover RGB) ─────────────
-
         private static DraftCardVisuals DraftCardVisualCache(Transform card)
         {
             if (!_cardVisuals.TryGetValue(card, out var visuals))
@@ -608,8 +578,6 @@ namespace DraftModeTOUM
             SetAllianceAura(card, aura, 0.26f, 1f);
         }
 
-        // ── Card creation ─────────────────────────────────────────────────────
-
         private static PassiveButton CreateCard(
             GameObject rolePrefab,
             Transform rolesHolder,
@@ -638,21 +606,10 @@ namespace DraftModeTOUM
             float randZ = (-10f + tiltIndex * 5f) * tiltScale
                           + UnityEngine.Random.Range(-1.5f, 1.5f) * tiltScale;
 
-            // FIX: Do NOT pre-capture hoverBasePosition here.
-            // The HorizontalLayoutGroup defers its layout pass to end-of-frame,
-            // so newRoleObj.transform.localPosition is NOT yet the final position
-            // at card-creation time. Capturing it here gives the wrong value on
-            // clients whose screen resolution causes the layout group to place
-            // cards differently than the host's machine.
-            //
-            // Instead, we capture it lazily inside OnMouseOver, where it is
-            // guaranteed to reflect the actual post-layout position.
-
             passiveButton.OnMouseOver.AddListener((UnityAction)(() =>
             {
                 if (Instance == null) return;
                 Instance._hoveredCard = actualCard;
-                // Capture actual post-layout position at hover time (resolution-safe)
                 newRoleObj.transform.localScale = Vector3.one * (cardScale * 1.075f);
             }));
 
@@ -660,10 +617,6 @@ namespace DraftModeTOUM
             {
                 if (Instance != null && Instance._hoveredCard == actualCard)
                     Instance._hoveredCard = null;
-                // Only restore scale — never touch localPosition here.
-                // The idle motion system owns actualCard's position; touching
-                // newRoleObj's position from two places (here + idle) caused
-                // the card to visually snap/disappear on some clients.
                 newRoleObj.transform.localScale = Vector3.one * cardScale;
             }));
 
@@ -713,7 +666,6 @@ namespace DraftModeTOUM
             teamText.fontSizeMax = 3.8f;
             teamText.color = GetTeamColor(teamName);
 
-            // Set sorting so cards render above backdrop
             foreach (var sr in newRoleObj.GetComponentsInChildren<SpriteRenderer>(true))
             { sr.sortingLayerName = "UI"; sr.sortingOrder = 70; }
             foreach (var tmp in newRoleObj.GetComponentsInChildren<TMPro.TMP_Text>(true))
@@ -726,8 +678,6 @@ namespace DraftModeTOUM
 
             return passiveButton;
         }
-
-        // ── Card animation ────────────────────────────────────────────────────
 
         private static IEnumerator CoAnimateCards(Transform rolesHolder, float cardScale, bool useGrid, int totalCards)
         {
@@ -743,8 +693,6 @@ namespace DraftModeTOUM
                 if (child == null) continue;
                 int animIndex = useGrid ? (i % cols) : i;
                 float stagger = Mathf.Min(i, 7) * DraftCardRevealStaggerSeconds;
-                // Pass both child (actualCard) and card (holder/newRoleObj) so
-                // RegisterIdleCard can store both references correctly.
                 Coroutines.Start(CoAnimateCardRevealSequence(child, card, animIndex, totalCards, cardScale, stagger));
             }
 
@@ -768,8 +716,6 @@ namespace DraftModeTOUM
             yield return CoAnimateCardIn(child, animIndex, totalCards, cardScale);
             if (child == null) yield break;
 
-            // Register AFTER animation completes so BasePosition is the final
-            // resting position of actualCard, not the mid-animation position.
             Instance?.RegisterIdleCard(child, holder);
 
             try
@@ -869,9 +815,6 @@ namespace DraftModeTOUM
             const float c1 = 1.70158f, c3 = c1 + 1f;
             return 1f + c3 * Mathf.Pow(t - 1f, 3f) + c1 * Mathf.Pow(t - 1f, 2f);
         }
-
-        // ── Update ────────────────────────────────────────────────────────────
-
         private float _localTimeLeft = -1f;
         private bool _cardsReady = false;
 
@@ -922,8 +865,6 @@ namespace DraftModeTOUM
             }
         }
 
-        // ── Card click ────────────────────────────────────────────────────────
-
         private void OnCardClicked(int index)
         {
             if (_hasPicked) return;
@@ -933,9 +874,6 @@ namespace DraftModeTOUM
         }
 
         private void DestroySelf() => Hide();
-
-        // ── Sprite factories ──────────────────────────────────────────────────
-
         private static Sprite _softGlowSprite;
         private static Sprite MakeSoftGlowSprite()
         {

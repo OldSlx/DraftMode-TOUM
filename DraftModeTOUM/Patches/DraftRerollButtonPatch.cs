@@ -20,14 +20,15 @@ namespace DraftModeTOUM.Patches
 
 
     [HarmonyPatch(typeof(DraftNetworkHelper), nameof(DraftNetworkHelper.BroadcastRecap))]
-    public static class HideDraftReroll
+public static class HideDraftReroll
+{
+    [HarmonyPostfix]
+    public static void Postfix()
     {
-        [HarmonyPostfix]
-        public static void Postfix()
-        {
-            CustomButtonSingleton<DraftRerollButton>.Instance.CreateButton(PlayerControl.LocalPlayer.GetComponent<HudManager>().transform);
-        }
+        if (HudManager.Instance != null)
+            CustomButtonSingleton<DraftRerollButton>.Instance.CreateButton(HudManager.Instance.transform);
     }
+}
 
 
     [HarmonyPatch(typeof(DraftNetworkHelper), nameof(DraftNetworkHelper.BroadcastCancelDraft))]
@@ -52,14 +53,5 @@ namespace DraftModeTOUM.Patches
             CustomButtonSingleton<DraftRerollButton>.Instance.SetUses((int)OptionGroupSingleton<DraftModeOptions>.Instance.RerollsPerPlayer.Value);
         }
     }
-    [HarmonyPatch(typeof(DraftNetworkHelper), nameof(DraftNetworkHelper.BroadcastDraftEnd))]
-    public static class HideDraftRerollAfterUsedUp
-    {
-        [HarmonyPostfix]
-        public static void Postfix()
-        {
-            DraftRerollButton.Hide();
-            CustomButtonSingleton<DraftRerollButton>.Instance.SetUses((int)OptionGroupSingleton<DraftModeOptions>.Instance.RerollsPerPlayer.Value);
-        }
-    }
+     
 }

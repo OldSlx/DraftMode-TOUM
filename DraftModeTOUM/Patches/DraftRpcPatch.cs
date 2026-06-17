@@ -55,34 +55,23 @@ namespace DraftModeTOUM.Patches
                     return false;
 
                 case DraftRpc.Recap:
-                    if (!AmongUsClient.Instance.AmHost)
-                    {
-                        bool show = reader.ReadBoolean();
-                        if (show)
-                        {
-                            int count   = reader.ReadInt32();
-                            var entries = new List<RecapEntry>();
-                            for (int i = 0; i < count; i++)
-                            {
-                                int    slot = reader.ReadInt32();
-                                string role = reader.ReadString();
-                                entries.Add(new RecapEntry(slot, role));
-                            }
-                            DraftRecapOverlay.Show(entries);
-                        }
-                        DraftStatusOverlay.SetState(OverlayState.BackgroundOnly);
-                        DraftManager.Reset(cancelledBeforeCompletion: false);
-                        DraftManager.TriggerEndDraftSequence();
-                    }
-                    else
-                    {
-                        bool show = reader.ReadBoolean();
-                        if (show)
-                        {
-                            int count = reader.ReadInt32();
-                            for (int i = 0; i < count; i++) { reader.ReadInt32(); reader.ReadString(); }
-                        }
-                    }
+                    bool show = reader.ReadBoolean();
+bool clientAutoStart = DraftManager.AutoStartAfterDraft; // snapshot before Reset
+if (show)
+{
+    int count   = reader.ReadInt32();
+    var entries = new List<RecapEntry>();
+    for (int i = 0; i < count; i++)
+    {
+        int    slot = reader.ReadInt32();
+        string role = reader.ReadString();
+        entries.Add(new RecapEntry(slot, role));
+    }
+    DraftRecapOverlay.Show(entries);
+}
+DraftStatusOverlay.SetState(OverlayState.BackgroundOnly);
+DraftManager.Reset(cancelledBeforeCompletion: false);
+DraftManager.TriggerEndDraftSequence(show, clientAutoStart);
                     return false;
 
                 case DraftRpc.SlotNotify:

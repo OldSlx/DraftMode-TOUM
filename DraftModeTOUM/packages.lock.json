@@ -58,9 +58,9 @@
       },
       "TownOfUsMira": {
         "type": "Direct",
-        "requested": "[1.6.0, )",
-        "resolved": "1.6.0",
-        "contentHash": "QePKPUQTQLci9fvNF12wrvCbU3uN+o1HZVGlBX3LMFVAUGfk9mkzum3lzz/FkC7e8bhU5pbiucshSq1CPu+tpQ==",
+        "requested": "[1.6.2, )",
+        "resolved": "1.6.2",
+        "contentHash": "l5Ys8BAzgsCd3ZYS/Id+1D5KiViwKXpOKDpR38ahuJW/dOo7iPpwszJ65FO1kmoyRcXln6ZQgL0/m+SdRnI6ew==",
         "dependencies": {
           "AllOfUs.MiraAPI": "0.3.9-ci.904",
           "BepInEx.Unity.IL2CPP": "6.0.0-be.735",

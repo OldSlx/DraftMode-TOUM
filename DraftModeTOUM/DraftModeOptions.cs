@@ -39,7 +39,6 @@ public sealed class DraftModeOptions : AbstractOptionGroup
                      && !OptionGroupSingleton<DraftModeOptions>.Instance.UseRoleListForPool
     };
 
-    // ── Evil caps (shown when NOT using role list) ────────────────────────
     public ModdedNumberOption MaxImpostors { get; set; } = new("Max Impostors", 2f, 0f, 5f, 1f, MiraNumberSuffixes.None, "0")
     {
         Visible = () => OptionGroupSingleton<DraftModeOptions>.Instance.EnableDraft

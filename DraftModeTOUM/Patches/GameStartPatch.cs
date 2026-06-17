@@ -4,11 +4,7 @@ using Reactor.Utilities;
 
 namespace DraftModeTOUM.Patches
 {
-    
-    
-    
-    
-    
+
     [HarmonyPatch(typeof(IntroCutscene), nameof(IntroCutscene.CoBegin))]
     public static class IntroCutsceneBeginPatch
     {

@@ -20,6 +20,7 @@ namespace DraftModeTOUM.Patches
         {
             DraftScreenController.Hide();
             DraftRecapOverlay.Hide();
+            DraftStatusOverlay.SetState(OverlayState.Hidden);
             DraftCancelButton.Hide();
 
             if (!DraftManager.SkipCountdown) return;
@@ -92,4 +93,3 @@ namespace DraftModeTOUM.Patches
         }
     }
 }
-

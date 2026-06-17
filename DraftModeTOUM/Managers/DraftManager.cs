@@ -788,15 +788,28 @@ namespace DraftModeTOUM.Managers
 
         private static void FinishDraft()
         {
+            // Snapshot options BEFORE Reset() wipes them
+            bool doRecap     = ShowRecap;
+            bool doAutoStart = AutoStartAfterDraft;
+
             ApplyAllRoles();
-            IsDraftActive    = false;
+
+            // Stop the timer and close UI while IsDraftActive is still true
+            // so CloseAll() correctly transitions the overlay to Waiting state
+            // instead of doing nothing
             TurnTimerRunning = false;
             DraftUiManager.CloseAll();
+
+            // Now mark the draft inactive and set the overlay to BackgroundOnly
+            IsDraftActive = false;
             DraftStatusOverlay.SetState(OverlayState.BackgroundOnly);
+
             var recapEntries = BuildRecapEntries();
-            DraftNetworkHelper.BroadcastRecap(recapEntries, ShowRecap);
-            Reset(cancelledBeforeCompletion: false);
-            TriggerEndDraftSequence();
+            DraftNetworkHelper.BroadcastRecap(recapEntries, doRecap);
+
+            // Kick off the end sequence, passing the snapshotted values so
+            // Reset() cannot wipe them before the coroutine reads them
+            TriggerEndDraftSequence(doRecap, doAutoStart);
         }
 
         public static List<RecapEntry> BuildRecapEntries()
@@ -962,7 +975,7 @@ namespace DraftModeTOUM.Managers
             FloorSpreadBias    = 1.0,
             ImpostorSpreadPower = 1.5,
             PositionEdge       = 0.25
-        }; 
+        };
 
         private static RoleFaction GetFaction(ushort id)
         {
@@ -971,29 +984,35 @@ namespace DraftModeTOUM.Managers
             return role != null ? RoleCategory.GetFactionFromRole(role) : RoleFaction.Crewmate;
         }
 
-        public static void TriggerEndDraftSequence()
+        // Called only from FinishDraft (host) and from the Recap RPC handler (clients).
+        // doRecap and doAutoStart are passed in as snapshots so Reset() cannot wipe them.
+        public static void TriggerEndDraftSequence(bool doRecap = false, bool doAutoStart = true)
         {
             if (_endSequenceRunning) return;
             _endSequenceRunning = true;
-            Coroutines.Start(CoEndDraftSequence());
+            Coroutines.Start(CoEndDraftSequence(doRecap, doAutoStart));
         }
 
-        private static IEnumerator CoEndDraftSequence()
+        private static IEnumerator CoEndDraftSequence(bool doRecap, bool doAutoStart)
         {
-            yield return new WaitForSeconds(ShowRecap ? 5.0f : 0.5f);
+            yield return new WaitForSeconds(doRecap ? 5.0f : 0.5f);
 
+            // If something (disconnect, cancel) already cleared the flag, bail out.
             if (!_endSequenceRunning) yield break;
 
             try { DraftRecapOverlay.Hide(); } catch { }
 
-            if (!AutoStartAfterDraft)
+            // Safe to reset now — we are done reading doRecap/doAutoStart from snapshots.
+            Reset(cancelledBeforeCompletion: false);
+
+            if (!doAutoStart)
             {
                 _endSequenceRunning = false;
                 try { DraftStatusOverlay.SetState(OverlayState.Hidden); } catch { }
                 yield break;
             }
 
-            bool shouldAutoStart = AutoStartAfterDraft && AmongUsClient.Instance.AmHost;
+            bool shouldAutoStart = doAutoStart && AmongUsClient.Instance.AmHost;
             if (shouldAutoStart &&
                 GameStartManager.Instance != null &&
                 AmongUsClient.Instance.GameState == InnerNet.InnerNetClient.GameStates.Joined)

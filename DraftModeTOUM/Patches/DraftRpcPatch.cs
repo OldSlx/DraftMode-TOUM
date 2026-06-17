@@ -55,23 +55,35 @@ namespace DraftModeTOUM.Patches
                     return false;
 
                 case DraftRpc.Recap:
-                    bool show = reader.ReadBoolean();
-bool clientAutoStart = DraftManager.AutoStartAfterDraft; // snapshot before Reset
-if (show)
-{
-    int count   = reader.ReadInt32();
-    var entries = new List<RecapEntry>();
-    for (int i = 0; i < count; i++)
-    {
-        int    slot = reader.ReadInt32();
-        string role = reader.ReadString();
-        entries.Add(new RecapEntry(slot, role));
-    }
-    DraftRecapOverlay.Show(entries);
-}
-DraftStatusOverlay.SetState(OverlayState.BackgroundOnly);
-DraftManager.Reset(cancelledBeforeCompletion: false);
-DraftManager.TriggerEndDraftSequence(show, clientAutoStart);
+                    if (!AmongUsClient.Instance.AmHost)
+                    {
+                        bool show = reader.ReadBoolean();
+                        if (show)
+                        {
+                            int count   = reader.ReadInt32();
+                            var entries = new List<RecapEntry>();
+                            for (int i = 0; i < count; i++)
+                            {
+                                int    slot = reader.ReadInt32();
+                                string role = reader.ReadString();
+                                entries.Add(new RecapEntry(slot, role));
+                            }
+                            DraftRecapOverlay.Show(entries);
+                        }
+                        DraftStatusOverlay.SetState(OverlayState.BackgroundOnly);
+                        DraftRerollButton.HideAndReset();
+                        DraftManager.Reset(cancelledBeforeCompletion: false);
+                        DraftManager.TriggerEndDraftSequence();
+                    }
+                    else
+                    {
+                        bool show = reader.ReadBoolean();
+                        if (show)
+                        {
+                            int count = reader.ReadInt32();
+                            for (int i = 0; i < count; i++) { reader.ReadInt32(); reader.ReadString(); }
+                        }
+                    }
                     return false;
 
                 case DraftRpc.SlotNotify:
@@ -136,11 +148,13 @@ DraftManager.TriggerEndDraftSequence(show, clientAutoStart);
                     {
                         DraftUiManager.CloseAll();
                         DraftStatusOverlay.SetState(OverlayState.Hidden);
+                        DraftRerollButton.HideAndReset();
                         DraftManager.Reset(cancelledBeforeCompletion: true);
                     }
                     return false;
 
                 case DraftRpc.EndDraft:
+                    DraftRerollButton.HideAndReset();
                     DraftManager.Reset(cancelledBeforeCompletion: true);
                     return false;
 
@@ -181,6 +195,7 @@ DraftManager.TriggerEndDraftSequence(show, clientAutoStart);
             for (int i = 0; i < count; i++) { pids.Add(reader.ReadByte()); slots.Add(reader.ReadInt32()); }
             DraftManager.SetDraftStateFromHost(total, pids, slots);
             DraftUiManager.CloseAll();
+            DraftRerollButton.ShowAndReset();
         }
 
         private static void HandleAnnounceTurn(MessageReader reader)

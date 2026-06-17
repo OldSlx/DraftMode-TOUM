@@ -22,6 +22,20 @@ public sealed class DraftRerollButton : TownOfUsButton
         CustomButtonSingleton<DraftRerollButton>.Instance.Disabled = true;
     }
 
+    public static void ShowAndReset()
+    {
+        Show();
+        CustomButtonSingleton<DraftRerollButton>.Instance.SetUses(
+            (int)OptionGroupSingleton<DraftModeOptions>.Instance.RerollsPerPlayer.Value);
+    }
+
+    public static void HideAndReset()
+    {
+        Hide();
+        CustomButtonSingleton<DraftRerollButton>.Instance.SetUses(
+            (int)OptionGroupSingleton<DraftModeOptions>.Instance.RerollsPerPlayer.Value);
+    }
+
     public override string Name => "Reroll";
     public override float InitialCooldown => 0.001f;
     public override float Cooldown => 0.001f;
@@ -55,5 +69,3 @@ public sealed class DraftRerollButton : TownOfUsButton
         DraftNetworkHelper.RequestReroll();    }
 
 }
-
-

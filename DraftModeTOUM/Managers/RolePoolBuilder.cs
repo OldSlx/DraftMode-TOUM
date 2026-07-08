@@ -102,7 +102,7 @@ namespace DraftModeTOUM.Managers
                 "Haunter", "Spectre", "Teleporter", "Pestilence", "Traitor", "Mayor", "Spectator", "CrewmateGhost", "ImpostorGhost", "GuardianAngel"
             };
 
-        public static bool IsBannedRole(string LocaleKey) => _bannedRoles.Contains(LocaleKey);
+        public static bool IsBannedRole(string localeKey) => _bannedRoles.Contains(localeKey);
 
         private static string GetAlignment(RoleBehaviour role)
         {

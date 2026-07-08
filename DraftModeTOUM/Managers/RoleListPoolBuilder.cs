@@ -258,7 +258,7 @@ namespace DraftModeTOUM.Managers
                 if (!CustomRoleUtils.CanSpawnOnCurrentMode(role)) continue;
                 if (role.Role is RoleTypes.CrewmateGhost or RoleTypes.ImpostorGhost or RoleTypes.GuardianAngel) continue;
                 if (role is ICustomRole cr && (cr.Configuration.HideSettings || !cr.VisibleInSettings())) continue;
-                if (RolePoolBuilder.IsBannedRole(role.NiceName)) continue;
+                if (RolePoolBuilder.IsBannedRole(role.GetRoleLocaleKey())) continue;
                 result.Add(role);
             }
 
